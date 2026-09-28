@@ -1,0 +1,9 @@
+experiment_id,site,ph,temperature,temp_unit,reading,unit,researcher
+E-001,A,7.1,25.0,C,101.3,kPa,Zhang
+E-002,A,7.0,,C,1.0,bar,Li
+E-003,B,6.8,298.15,K,760.0,mmHg,Chen
+E-003,B,6.8,298.15,K,765.0,mmHg,Wang
+E-004,C,,30.0,C,0.98,bar,Zhang
+E-005,A,7.2,24.5,C,,kPa,Li
+E-006,B,6.9,25.5,C,995.0,hPa,Zhou
+E-007,C,7.3,303.15,K,14.7,psi,Chen
