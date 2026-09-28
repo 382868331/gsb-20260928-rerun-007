@@ -1,0 +1,8 @@
+sample_id,date,temperature,temp_unit,pressure,notes
+S1,2026-09-01,25.0,C,101.3,ok
+S2,2026-09-01,77.0,F,101.1,ok
+S3,2026-09-02,30.0,C,,ok
+S1,2026-09-01,25.0,C,101.3,duplicate
+S2,2026-09-01,25.0,C,101.1,unit-normalised-duplicate
+S4,2026-09-03,,C,99.8,missing-temp
+S5,2026-09-04,212.0,F,100.5,ok
