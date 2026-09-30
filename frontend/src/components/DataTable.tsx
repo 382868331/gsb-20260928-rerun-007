@@ -1,5 +1,5 @@
 import { Info } from "lucide-react";
-import type { Row } from "../types";
+import type { AnomalyMarker, Row } from "../types";
 
 interface Props {
   rows: Row[];
@@ -8,9 +8,10 @@ interface Props {
   onTrace?: (rowId: string) => void;
   maxRows?: number;
   highlightIds?: Set<string>;
+  anomalies?: Record<string, Record<string, AnomalyMarker>>;
 }
 
-export function DataTable({ rows, columns, version, onTrace, maxRows, highlightIds }: Props) {
+export function DataTable({ rows, columns, version, onTrace, maxRows, highlightIds, anomalies }: Props) {
   const shown = maxRows ? rows.slice(0, maxRows) : rows;
   return (
     <div className="table-wrap">
@@ -26,9 +27,20 @@ export function DataTable({ rows, columns, version, onTrace, maxRows, highlightI
         </thead>
         <tbody>
           {shown.map((row) => {
-            const cells = columns.map((c) => (
-              <td key={c}>{String(row[c] ?? "")}</td>
-            ));
+            const rowAnomalies = anomalies?.[row._id];
+            const cells = columns.map((c) => {
+              const marker = rowAnomalies?.[c];
+              return (
+                <td key={c} className={marker ? "cell-anomaly" : undefined}>
+                  {String(row[c] ?? "")}
+                  {marker && (
+                    <span className={`anomaly-badge ${marker.kind}`} title="保留原值待核对，未当作可用数值">
+                      待核对·{marker.kind === "missing" ? "缺失" : marker.kind === "invalid" ? "非法文字" : "超范围"}
+                    </span>
+                  )}
+                </td>
+              );
+            });
             return (
               <tr key={row._id} className={highlightIds?.has(row._id) ? "affected-row" : undefined}>
                 <td className="mono">{row._id}</td>

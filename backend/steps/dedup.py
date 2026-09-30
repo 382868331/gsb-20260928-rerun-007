@@ -14,17 +14,12 @@ always tells which original records it came from.
 """
 
 
+from . import values as valuecheck
+
+
 def _as_number(value):
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
-    return None
+    kind, number, _ = valuecheck.classify(value)
+    return number if kind == valuecheck.KIND_FINITE else None
 
 
 def _equal(a, b):
@@ -81,8 +76,33 @@ def apply(rows, params):
             for value in values:
                 if not any(_equal(value, d) for d in distinct):
                     distinct.append(value)
-            if len(distinct) <= 1:
+            # Rows parked as "pending review" carry the original bad text
+            # plus an _anomalies marker; merge must not average it away.
+            flagged_members = [m for m in members
+                               if (m.get(valuecheck.ANOMALIES_KEY) or {}).get(col)]
+            if len(distinct) <= 1 and not flagged_members:
                 representative[col] = values[0]
+                continue
+            if flagged_members:
+                good = [m for m in members
+                        if not (m.get(valuecheck.ANOMALIES_KEY) or {}).get(col)]
+                marked = dict(representative.get(valuecheck.ANOMALIES_KEY) or {})
+                if not good:
+                    marked[col] = flagged_members[0][valuecheck.ANOMALIES_KEY][col]
+                    representative[col] = flagged_members[0].get(col)
+                    representative[valuecheck.ANOMALIES_KEY] = marked
+                else:
+                    representative[col] = good[0].get(col)
+                    if merge == "mean":
+                        nums = [_as_number(m.get(col)) for m in good]
+                        if all(n is not None for n in nums):
+                            representative[col] = round(sum(nums) / len(nums), 6)
+                    representative.pop(valuecheck.ANOMALIES_KEY, None)
+                conflicts.append({
+                    "column": col,
+                    "keys": dict(zip(keys, key)),
+                    "values": values,
+                })
                 continue
 
             conflicts.append({

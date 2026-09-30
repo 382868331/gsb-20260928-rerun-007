@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { FlaskConical, Plus, Play, Eye, Upload, RefreshCw } from "lucide-react";
 import { api } from "./api";
 import type {
+  AnomalyMarker,
   Manifest,
   PipelineStep,
   PreviewResult,
@@ -18,7 +19,12 @@ let stepSeq = 0;
 const newStep = (type: StepType): PipelineStep => ({
   id: `s${Date.now()}-${stepSeq++}`,
   type,
-  params: type === "dedup_merge" ? { merge: "mean", on_conflict: "keep_all" } : {},
+  params:
+    type === "dedup_merge"
+      ? { merge: "mean", on_conflict: "keep_all" }
+      : type === "validate_numbers"
+        ? { strict: true, rules: [] }
+        : {},
 });
 
 export default function App() {
@@ -28,11 +34,18 @@ export default function App() {
   const [columns, setColumns] = useState<string[]>([]);
   const [viewVersion, setViewVersion] = useState(0);
   const [rows, setRows] = useState<Row[]>([]);
+  const [anomalies, setAnomalies] =
+    useState<Record<string, Record<string, AnomalyMarker>>>({});
+  const [versionAnomalies, setVersionAnomalies] =
+    useState<Record<string, Record<string, AnomalyMarker>>>({});
   const [steps, setSteps] = useState<PipelineStep[]>([]);
   const [label, setLabel] = useState("");
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [accepted, setAccepted] = useState<Set<number>>(new Set());
   const [traceRow, setTraceRow] = useState<string | null>(null);
+  const [versionReports, setVersionReports] = useState<
+    { label: string; actions: { origins: string[]; description: string }[] }[]
+  >([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -58,6 +71,14 @@ export default function App() {
     api.getVersion(project, version).then((res) => {
       setRows(res.rows);
       setColumns(res.columns);
+      setAnomalies(res.anomalies ?? {});
+      setVersionAnomalies(res.anomalies ?? {});
+      setVersionReports(
+        res.step_reports.map((r) => ({
+          label: r.label,
+          actions: r.actions ?? [],
+        }))
+      );
     });
   }
 
@@ -69,6 +90,7 @@ export default function App() {
   function patchSteps(next: PipelineStep[]) {
     setSteps(next);
     invalidatePreview();
+    setAnomalies(versionAnomalies);
   }
 
   async function upload() {
@@ -89,11 +111,14 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      setPreview(await api.preview(project, steps));
+      const result = await api.preview(project, steps, viewVersion);
+      setPreview(result);
+      setAnomalies(result.anomalies ?? {});
       setAccepted(new Set());
     } catch (e) {
       setError(`预览失败，未改动任何数据：${(e as Error).message}`);
       invalidatePreview();
+      setAnomalies(versionAnomalies);
     } finally {
       setBusy(false);
     }
@@ -103,7 +128,7 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const res = await api.apply(project, label, steps);
+      const res = await api.apply(project, label, steps, viewVersion);
       const info = await api.getProject(project);
       setManifest(info.manifest);
       setSteps([]);
@@ -177,7 +202,15 @@ export default function App() {
         )}
         <main className="main-col">
           <section className="card">
-            <h2>处理流水线（v{manifest?.latest_version} → 新版本）</h2>
+            <h2>
+              处理流水线（基于 v{viewVersion}
+              {viewVersion !== manifest?.latest_version ? "（历史版本）" : ""} →
+              新版本）
+            </h2>
+            <p className="muted small">
+              预览与执行都只使用当前选中的基线版本（左侧版本历史切换）；
+              原数据 v0 与已发布的成功版本永不改写。可基于同一基线分别保存多套策略以便比较。
+            </p>
             {steps.map((step, i) => (
               <StepEditor
                 key={step.id}
@@ -198,6 +231,9 @@ export default function App() {
               </button>
               <button className="btn" onClick={() => patchSteps([...steps, newStep("dedup_merge")])}>
                 <Plus size={14} /> 重复合并
+              </button>
+              <button className="btn" onClick={() => patchSteps([...steps, newStep("validate_numbers")])}>
+                <Plus size={14} /> 数值有效性检查
               </button>
             </div>
             <div className="row">
@@ -243,7 +279,11 @@ export default function App() {
                   patchSteps(steps.filter((s) => s.id !== removed.id));
                 }}
               />
-              <DataTable rows={preview.sample} columns={columns} />
+              <DataTable
+                rows={preview.sample}
+                columns={columns}
+                anomalies={preview.anomalies ?? {}}
+              />
             </section>
           )}
 
@@ -254,7 +294,28 @@ export default function App() {
               columns={columns}
               version={viewVersion}
               onTrace={viewVersion === 0 ? undefined : setTraceRow}
+              anomalies={anomalies}
             />
+            {versionReports.some((r) => r.actions.length > 0) && (
+              <div className="affected-box">
+                <span className="small muted">本版本逐行处理与追溯（含被排除行的原值）：</span>
+                {versionReports.map((r, i) =>
+                  r.actions.length === 0 ? null : (
+                    <div key={i}>
+                      <strong className="small">{r.label}</strong>
+                      <ul className="affected-list">
+                        {r.actions.map((a, j) => (
+                          <li key={j} className="affected-item">
+                            <code>{a.origins.join(", ")}</code>
+                            <span>{a.description}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
           </section>
         </main>
       </div>

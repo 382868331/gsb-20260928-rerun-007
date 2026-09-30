@@ -4,30 +4,31 @@ params:
   columns: list[str]        # columns to handle; empty = all columns
   strategy: "drop_row" | "fill_constant" | "fill_mean" | "fill_median" | "fill_mode"
   fill_value: any           # required for fill_constant
+
+Only genuinely missing cells are handled here. Illegal text and
+non-finite values are left untouched (they belong to validate_numbers /
+unit_convert policies) and never participate in mean/median fills.
+Cells parked as "pending review" are left exactly as they were.
 """
 from statistics import mean, median
 
-
-MISSING_TOKENS = {"", "na", "nan", "null", "none", "n/a"}
-
-
-def _is_missing(value):
-    return value is None or (
-        isinstance(value, str) and value.strip().lower() in MISSING_TOKENS
-    )
+from . import values
 
 
-def _as_number(value):
-    if isinstance(value, bool):
+def _is_missing(row, col):
+    marked = (row.get(values.ANOMALIES_KEY) or {}).get(col)
+    if marked:
+        return False
+    kind, _, _ = values.classify(row.get(col))
+    return kind == values.KIND_MISSING
+
+
+def _finite_number(row, col):
+    marked = (row.get(values.ANOMALIES_KEY) or {}).get(col)
+    if marked:
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
-    return None
+    kind, number, _ = values.classify(row.get(col))
+    return number if kind == values.KIND_FINITE else None
 
 
 def apply(rows, params):
@@ -37,22 +38,25 @@ def apply(rows, params):
     )
     fill_value = params.get("fill_value")
 
-    target_columns = set(columns)
+    if strategy == "fill_constant":
+        if fill_value is None or (
+                isinstance(fill_value, str) and not fill_value.strip()):
+            raise ValueError(
+                "fill_constant needs an explicit non-empty 'fill_value' "
+                "(missing values must not silently become empty or zero)")
 
-    numeric_columns = {col for col in columns
-                       if any(_as_number(row.get(col)) is not None
-                              for row in rows)}
+    target_columns = set(columns)
 
     fills = {}
     if strategy == "fill_mean":
         for col in columns:
-            vals = [_as_number(row.get(col)) for row in rows]
+            vals = [_finite_number(row, col) for row in rows]
             vals = [v for v in vals if v is not None]
             if vals:
                 fills[col] = round(mean(vals), 6)
     elif strategy == "fill_median":
         for col in columns:
-            vals = [_as_number(row.get(col)) for row in rows]
+            vals = [_finite_number(row, col) for row in rows]
             vals = [v for v in vals if v is not None]
             if vals:
                 fills[col] = median(vals)
@@ -60,8 +64,9 @@ def apply(rows, params):
         for col in columns:
             counts = {}
             for row in rows:
-                value = row.get(col)
-                if not _is_missing(value):
+                if not _is_missing(row, col) and not (
+                        row.get(values.ANOMALIES_KEY) or {}).get(col):
+                    value = row.get(col)
                     counts[value] = counts.get(value, 0) + 1
             if counts:
                 fills[col] = max(counts, key=lambda k: (counts[k], str(k)))
@@ -74,7 +79,7 @@ def apply(rows, params):
     lineage = {}
 
     for row in rows:
-        missing_here = [col for col in target_columns if _is_missing(row.get(col))]
+        missing_here = [col for col in target_columns if _is_missing(row, col)]
         affected += len(missing_here)
         if missing_here and strategy == "drop_row":
             dropped += 1

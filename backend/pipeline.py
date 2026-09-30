@@ -34,6 +34,9 @@ def validate_spec(spec):
             raise ValueError(f"step {index} ({name}): params must be an object")
         if name == "dedup_merge" and not params.get("keys"):
             raise ValueError(f"step {index}: dedup_merge needs non-empty 'keys'")
+        if name == "validate_numbers" and not params.get("columns"):
+            raise ValueError(
+                f"step {index}: validate_numbers needs non-empty 'columns'")
         if name == "unit_convert":
             if not params.get("column"):
                 raise ValueError(f"step {index}: unit_convert needs 'column'")
@@ -81,6 +84,20 @@ def _action_records(step_type, stats, lineage):
         elif item.get("action") == "drop_row":
             origins = _resolve_origins([item["row_id"]], lineage)
             description = f"缺失处理：删除该行（缺失列：{', '.join(item.get('columns', []))}）"
+        elif step_type in ("validate_numbers", "unit_convert") and item.get("kind"):
+            origins = _resolve_origins([item["row_id"]], lineage)
+            from .steps.values import describe_kind
+            kind_text = describe_kind(item.get("kind"))
+            source_text = f"，来源 {item.get('source')}" if item.get("source") is not None else ""
+            action_text = {
+                "drop": "排除该行",
+                "replace": f"替换为 {item.get('after')}",
+                "flag": "保留待核对（不修改原值）",
+            }.get(item.get("action"), item.get("action", ""))
+            description = (
+                f"{item.get('column')}：原值 {item.get('before')!r} "
+                f"判定为{kind_text}{source_text}，{action_text}"
+            )
         else:
             origins = _resolve_origins([item["row_id"]], lineage)
             label = {
@@ -155,24 +172,31 @@ def atomic_write_json(path, payload):
         raise
 
 
-def apply_spec(project_dir, spec, label=""):
+def apply_spec(project_dir, spec, label="", base_version=None):
     """Execute spec against the project's latest version and commit a new one.
 
     The new version is fully built in memory first; only when all steps
     succeed are the version file and the manifest swapped atomically.
     """
-    manifest = json.load(open(os.path.join(project_dir, "manifest.json"),
-                              encoding="utf-8"))
-    latest_no = manifest["latest_version"]
-    latest_path = os.path.join(project_dir, "versions", f"v{latest_no}.json")
-    latest = json.load(open(latest_path, encoding="utf-8"))
+    with open(os.path.join(project_dir, "manifest.json"),
+              encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if base_version is None:
+        base_version = manifest["latest_version"]
+    available = {v["version"] for v in manifest["versions"]}
+    if base_version not in available:
+        raise ValueError(f"base version v{base_version} not found")
+    base_no = base_version
+    base_path = os.path.join(project_dir, "versions", f"v{base_no}.json")
+    with open(base_path, encoding="utf-8") as handle:
+        base = json.load(handle)
 
-    final_rows, lineage, reports = run(latest["rows"], spec)
+    final_rows, lineage, reports = run(base["rows"], spec)
 
-    new_no = latest_no + 1
+    new_no = max(available) + 1
     version_payload = {
         "version": new_no,
-        "created_from": latest_no,
+        "created_from": base_no,
         "rows": final_rows,
         "lineage": lineage,
         "step_reports": reports,
@@ -190,7 +214,7 @@ def apply_spec(project_dir, spec, label=""):
     # unreferenced file, never a half-visible version.
     manifest["versions"].append({
         "version": new_no,
-        "created_from": latest_no,
+        "created_from": base_no,
         "label": label,
         "steps": [{"type": s["type"], "params": s.get("params", {})}
                   for s in spec["steps"]],

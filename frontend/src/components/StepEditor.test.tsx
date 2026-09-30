@@ -54,4 +54,48 @@ describe("StepEditor", () => {
       expect.objectContaining({ type: "unit_convert", params: {} })
     );
   });
+
+  it("edits per-source anomaly rules for validate_numbers", () => {
+    const onChange = vi.fn();
+    render(
+      <StepEditor
+        step={{
+          id: "s3",
+          type: "validate_numbers",
+          params: {
+            columns: ["v"],
+            source_column: "source",
+            strict: true,
+            rules: [
+              { kind: "invalid", source: "lab-b", action: "replace", value: "" },
+            ],
+          },
+        }}
+        index={2}
+        columns={["source", "v"]}
+        onChange={onChange}
+        onRemove={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByText("添加异常策略"));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          rules: expect.arrayContaining([
+            expect.objectContaining({ action: "flag", kind: "invalid" }),
+          ]),
+        }),
+      })
+    );
+    // replacement value input is enabled only for the replace policy
+    const valueInput = screen.getByPlaceholderText("必须明确给出");
+    fireEvent.change(valueInput, { target: { value: "-99" } });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          rules: [expect.objectContaining({ value: "-99" })],
+        }),
+      })
+    );
+  });
 });

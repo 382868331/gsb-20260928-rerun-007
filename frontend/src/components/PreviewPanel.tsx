@@ -14,6 +14,7 @@ export function PreviewPanel({ preview, accepted, onAccept, onReject }: Props) {
     <div className="preview-panel">
       <div className="preview-summary">
         <span>
+          {preview.base_version !== undefined ? `基线 v${preview.base_version}：` : ""}
           行数：{preview.row_count_before} → {" "}
           <strong className={delta < 0 ? "danger-text" : ""}>
             {preview.row_count_after}

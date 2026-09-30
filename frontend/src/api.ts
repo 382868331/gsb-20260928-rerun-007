@@ -25,23 +25,27 @@ export const api = {
     ),
 
   getVersion: (name: string, version: number) =>
-    request<{ version: number; rows: Row[]; columns: string[]; step_reports: StepReport[] }>(
+    request<{ version: number; rows: Row[]; columns: string[]; step_reports: StepReport[]; anomalies?: Record<string, Record<string, import("./types").AnomalyMarker>> }>(
       `/api/projects/${encodeURIComponent(name)}/versions/${version}`
     ),
 
-  preview: (name: string, steps: PipelineStep[]) =>
+  preview: (name: string, steps: PipelineStep[], baseVersion?: number) =>
     request<PreviewResult>(`/api/projects/${encodeURIComponent(name)}/preview`, {
       method: "POST",
-      body: JSON.stringify({ steps: steps.map(({ type, params }) => ({ type, params })) }),
+      body: JSON.stringify({
+        base_version: baseVersion,
+        steps: steps.map(({ type, params }) => ({ type, params })),
+      }),
     }),
 
-  apply: (name: string, label: string, steps: PipelineStep[]) =>
+  apply: (name: string, label: string, steps: PipelineStep[], baseVersion?: number) =>
     request<{ version: number; reports: StepReport[] }>(
       `/api/projects/${encodeURIComponent(name)}/apply`,
       {
         method: "POST",
         body: JSON.stringify({
           label,
+          base_version: baseVersion,
           steps: steps.map(({ type, params }) => ({ type, params })),
         }),
       }

@@ -331,3 +331,30 @@ th { background: #f8fafc; font-weight: 600; }
 }
 .timeline-list { margin: 6px 0 0; padding-left: 18px; }
 .timeline-list li { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; font-size: 13px; }
+
+.cell-anomaly {
+  background: var(--danger-weak);
+}
+
+.anomaly-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.anomaly-badge.missing { background: #fef3c7; color: #92400e; }
+.anomaly-badge.invalid { background: var(--danger-weak); color: var(--danger); }
+.anomaly-badge.nonfinite { background: #ede9fe; color: #6d28d9; }
+
+.anomaly-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}

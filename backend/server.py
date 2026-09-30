@@ -27,9 +27,22 @@ def _columns(rows):
     seen = []
     for row in rows:
         for key in row:
-            if key != "_id" and key not in seen:
+            if key not in ("_id",) and not key.startswith("_") and key not in seen:
                 seen.append(key)
     return seen
+
+
+def _public_rows(rows):
+    """Strip internal bookkeeping but surface anomaly markers separately."""
+    public = []
+    anomalies = {}
+    for row in rows:
+        clean = {k: v for k, v in row.items() if not k.startswith("_") or k == "_id"}
+        public.append(clean)
+        marker = row.get("_anomalies")
+        if marker:
+            anomalies[row["_id"]] = marker
+    return public, anomalies
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -115,9 +128,11 @@ class Handler(BaseHTTPRequestHandler):
                     version_no = int(parts[4])
                     version = store.load_version(project_dir, version_no)
                     if len(parts) == 5:
+                        public, anomalies = _public_rows(version["rows"])
                         return self._send(200, {
                             "version": version_no,
-                            "rows": version["rows"],
+                            "rows": public,
+                            "anomalies": anomalies,
                             "columns": _columns(version["rows"]),
                             "step_reports": version["step_reports"],
                         })
@@ -163,17 +178,23 @@ class Handler(BaseHTTPRequestHandler):
                 latest = store.load_version(project_dir, manifest["latest_version"])
                 if parts[3] == "preview":
                     spec = {"steps": body.get("steps", [])}
-                    rows, lineage, reports = pipeline.run(latest["rows"], spec)
+                    base_no = body.get("base_version", manifest["latest_version"])
+                    base = store.load_version(project_dir, base_no)
+                    rows, lineage, reports = pipeline.run(base["rows"], spec)
+                    public, anomalies = _public_rows(rows)
                     return self._send(200, {
                         "reports": reports,
-                        "row_count_before": len(latest["rows"]),
+                        "base_version": base_no,
+                        "row_count_before": len(base["rows"]),
                         "row_count_after": len(rows),
-                        "sample": rows,
+                        "sample": public,
+                        "anomalies": anomalies,
                     })
                 if parts[3] == "apply":
                     spec = {"steps": body.get("steps", [])}
                     new_no, reports = pipeline.apply_spec(
-                        project_dir, spec, label=body.get("label", ""))
+                        project_dir, spec, label=body.get("label", ""),
+                        base_version=body.get("base_version"))
                     return self._send(201, {
                         "version": new_no,
                         "reports": reports,

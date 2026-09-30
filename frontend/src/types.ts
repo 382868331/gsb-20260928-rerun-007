@@ -1,4 +1,25 @@
-export type StepType = "missing_values" | "unit_convert" | "dedup_merge";
+export type StepType =
+  | "missing_values"
+  | "unit_convert"
+  | "dedup_merge"
+  | "validate_numbers";
+
+export type AnomalyKind = "missing" | "invalid" | "nonfinite";
+export type AnomalyAction = "flag" | "drop" | "replace";
+
+export interface AnomalyRule {
+  kind: AnomalyKind;
+  source?: string;
+  action: AnomalyAction;
+  value?: string | number;
+}
+
+export interface AnomalyMarker {
+  kind: AnomalyKind;
+  raw: unknown;
+  stage: string;
+  unit?: string;
+}
 
 export interface PipelineStep {
   id: string;
@@ -33,9 +54,11 @@ export interface Row {
 
 export interface PreviewResult {
   reports: StepReport[];
+  base_version?: number;
   row_count_before: number;
   row_count_after: number;
   sample: Row[];
+  anomalies?: Record<string, Record<string, AnomalyMarker>>;
 }
 
 export interface VersionMeta {

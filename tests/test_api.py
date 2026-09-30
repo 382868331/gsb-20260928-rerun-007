@@ -91,17 +91,18 @@ class ApiTests(unittest.TestCase):
         # The shipped sample deliberately contains an illegal numeric value
         # (S6 temperature 'ERR'): preview/apply must fail and publish nothing.
         self.assertEqual(400, status)
-        self.assertIn("non-numeric", preview["error"])
+        self.assertIn("r0008", preview["error"])
+        self.assertIn("ERR", preview["error"])
         status, info = call("GET", "/api/projects/lab")
         self.assertEqual(0, info["manifest"]["latest_version"])
         status, failed = call("POST", "/api/projects/lab/apply", spec)
         self.assertEqual(400, status)
-        self.assertIn("non-numeric", failed["error"])
+        self.assertIn("r0008", failed["error"])
 
         # Fix the raw value (100F -> valid), re-run: success is published and
         # can be reopened later.
-        clean_csv = CSV.replace("S6,2026-09-05,ERR,F,100.1",
-                                "S6,2026-09-05,100.0,F,100.1")
+        clean_csv = CSV.replace("S6,2026-09-05,lab-b,ERR,F,100.1",
+                                "S6,2026-09-05,lab-b,100.0,F,100.1")
         call("POST", "/api/projects", {"name": "lab2", "csv": clean_csv})
 
         # preview exposes which rows each step touches (before publishing)
@@ -142,7 +143,7 @@ class ApiTests(unittest.TestCase):
         status, res = call("POST", "/api/projects/lab/apply", bad)
         self.assertEqual(400, status)
         self.assertTrue("unknown unit" in res["error"]
-                        or "non-numeric" in res["error"])
+                        or "r0008" in res["error"])
         status, info = call("GET", "/api/projects/lab")
         self.assertEqual(0, info["manifest"]["latest_version"])
 

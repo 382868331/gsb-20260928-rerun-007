@@ -1,10 +1,11 @@
 import { Trash2, GripVertical } from "lucide-react";
-import type { PipelineStep, StepType } from "../types";
+import type { AnomalyKind, AnomalyRule, PipelineStep, StepType } from "../types";
 
 const STEP_TYPES: { value: StepType; label: string; hint: string }[] = [
   { value: "missing_values", label: "缺失值处理", hint: "删除或填充缺失单元格" },
   { value: "unit_convert", label: "单位换算", hint: "混排单位归一到标准单位" },
   { value: "dedup_merge", label: "重复记录合并", hint: "按主键合并冲突记录" },
+  { value: "validate_numbers", label: "数值有效性检查", hint: "按来源区分缺失 / 非法文字 / 超范围" },
 ];
 
 interface Props {
@@ -143,6 +144,22 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
               placeholder="例如 C"
             />
           </label>
+          <label>
+            来源列（按来源设置异常策略，可空）
+            <select
+              value={(p.source_column as string) ?? ""}
+              onChange={(e) => update({ source_column: e.target.value || null })}
+            >
+              <option value="">不区分来源</option>
+              {columns.map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+          <AnomalyRulesEditor
+            rules={(p.anomaly_rules as AnomalyRule[]) ?? []}
+            onChange={(anomalyRules) => update({ anomaly_rules: anomalyRules })}
+          />
           <div>
             <span className="small muted">
               换算规则：标准值 = 原始值 × factor + offset（标准单位自身 factor=1）
@@ -205,6 +222,47 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
         </div>
       )}
 
+      {step.type === "validate_numbers" && (
+        <div className="step-body">
+          <div>
+            <span className="small muted">需要为有限数值的列</span>
+            <CheckboxList
+              columns={columns}
+              selected={(p.columns as string[]) ?? []}
+              onToggle={(col) => {
+                const current = new Set((p.columns as string[]) ?? []);
+                current.has(col) ? current.delete(col) : current.add(col);
+                update({ columns: [...current] });
+              }}
+            />
+          </div>
+          <label>
+            来源列（可空；填写后可按来源分别设置策略）
+            <select
+              value={(p.source_column as string) ?? ""}
+              onChange={(e) => update({ source_column: e.target.value || null })}
+            >
+              <option value="">不区分来源</option>
+              {columns.map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+          <AnomalyRulesEditor
+            rules={(p.rules as AnomalyRule[]) ?? []}
+            onChange={(rules) => update({ rules })}
+          />
+          <label className="small">
+            <input
+              type="checkbox"
+              checked={p.strict !== false}
+              onChange={(e) => update({ strict: e.target.checked })}
+            />
+            未配置策略的异常一律中止（不发布任何结果）
+          </label>
+        </div>
+      )}
+
       {step.type === "dedup_merge" && (
         <div className="step-body">
           <div>
@@ -256,6 +314,106 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
           </label>
         </div>
       )}
+    </div>
+  );
+}
+
+const ANOMALY_KIND_LABELS: { value: AnomalyKind; label: string }[] = [
+  { value: "missing", label: "缺失（空 / N/A）" },
+  { value: "invalid", label: "非法文字（如 ERR）" },
+  { value: "nonfinite", label: "超出有限范围（inf / NaN / 溢出）" },
+];
+
+function AnomalyRulesEditor({
+  rules,
+  onChange,
+}: {
+  rules: AnomalyRule[];
+  onChange: (rules: AnomalyRule[]) => void;
+}) {
+  const updateAt = (i: number, patch: Partial<AnomalyRule>) =>
+    onChange(rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  return (
+    <div className="anomaly-rules">
+      <span className="small muted">
+        异常处理策略（同一列可按来源分别设置；精确来源优先于“任意来源”）
+      </span>
+      <table className="rules-table">
+        <thead>
+          <tr>
+            <th>异常类型</th>
+            <th>来源（空 = 任意）</th>
+            <th>策略</th>
+            <th>明确替代值</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rules.map((rule, i) => (
+            <tr key={i}>
+              <td>
+                <select
+                  value={rule.kind}
+                  onChange={(e) =>
+                    updateAt(i, { kind: e.target.value as AnomalyKind })}
+                >
+                  {ANOMALY_KIND_LABELS.map((k) => (
+                    <option key={k.value} value={k.value}>{k.label}</option>
+                  ))}
+                </select>
+              </td>
+              <td>
+                <input
+                  value={rule.source ?? ""}
+                  placeholder="任意来源"
+                  onChange={(e) => updateAt(i, { source: e.target.value })}
+                />
+              </td>
+              <td>
+                <select
+                  value={rule.action}
+                  onChange={(e) =>
+                    updateAt(i, {
+                      action: e.target.value as AnomalyRule["action"],
+                    })}
+                >
+                  <option value="flag">保留待核对（不改原值）</option>
+                  <option value="drop">排除该行</option>
+                  <option value="replace">使用替代值</option>
+                </select>
+              </td>
+              <td>
+                <input
+                  value={String(rule.value ?? "")}
+                  disabled={rule.action !== "replace"}
+                  placeholder={rule.action === "replace" ? "必须明确给出" : ""}
+                  onChange={(e) => updateAt(i, { value: e.target.value })}
+                />
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  onClick={() => onChange(rules.filter((_, idx) => idx !== i))}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button
+        type="button"
+        className="btn small"
+        onClick={() =>
+          onChange([
+            ...rules,
+            { kind: "invalid", source: "", action: "flag" },
+          ])}
+      >
+        添加异常策略
+      </button>
     </div>
   );
 }
