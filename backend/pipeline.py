@@ -58,7 +58,9 @@ def _compose(global_lineage, local_lineage):
 def run(rows, spec):
     """Run a spec over rows purely, without persisting anything.
 
-    Returns (final_rows, global_lineage, step_reports).
+    Returns (final_rows, global_lineage, step_reports, stage_lineages,
+    stage_rows). stage_lineages[i] maps step i's output ids to the input
+    ids it consumed; stage_rows[i] is the full row list after step i.
     Raises ValueError on any invalid spec or failed step; the caller's
     data is untouched because steps copy rows and nothing is committed.
     """
@@ -66,6 +68,8 @@ def run(rows, spec):
     current = [dict(r) for r in rows]
     global_lineage = {r["_id"]: [r["_id"]] for r in current}
     reports = []
+    stage_lineages = []
+    stage_rows = []
 
     for step in spec["steps"]:
         step_type = step["type"]
@@ -73,6 +77,8 @@ def run(rows, spec):
             current, step.get("params", {})
         )
         global_lineage = _compose(global_lineage, local_lineage)
+        stage_lineages.append(local_lineage)
+        stage_rows.append(next_rows)
         reports.append({
             "type": step_type,
             "label": STEP_LABELS.get(step_type, step_type),
@@ -83,7 +89,7 @@ def run(rows, spec):
         })
         current = next_rows
 
-    return current, global_lineage, reports
+    return current, global_lineage, reports, stage_lineages, stage_rows
 
 
 def atomic_write_json(path, payload):
@@ -116,7 +122,7 @@ def apply_spec(project_dir, spec, label=""):
     latest_path = os.path.join(project_dir, "versions", f"v{latest_no}.json")
     latest = json.load(open(latest_path, encoding="utf-8"))
 
-    final_rows, lineage, reports = run(latest["rows"], spec)
+    final_rows, lineage, reports, stage_lineages, _ = run(latest["rows"], spec)
 
     new_no = latest_no + 1
     version_payload = {
@@ -124,6 +130,7 @@ def apply_spec(project_dir, spec, label=""):
         "created_from": latest_no,
         "rows": final_rows,
         "lineage": lineage,
+        "stage_lineages": stage_lineages,
         "step_reports": reports,
     }
     versions_dir = os.path.join(project_dir, "versions")

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { X, GitBranch } from "lucide-react";
 import { api } from "../api";
-import type { Row } from "../types";
+import type { Row, Treatment } from "../types";
+import { describeAction } from "./StepReview";
 
 interface Props {
   project: string;
@@ -13,6 +14,8 @@ interface Props {
 export function LineageModal({ project, version, rowId, onClose }: Props) {
   const [origins, setOrigins] = useState<string[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
+  const [cleanRow, setCleanRow] = useState<Row | null>(null);
+  const [treatments, setTreatments] = useState<Treatment[]>([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -21,6 +24,8 @@ export function LineageModal({ project, version, rowId, onClose }: Props) {
       .then((res) => {
         setOrigins(res.origins);
         setRows(res.origin_rows);
+        setCleanRow(res.clean_row);
+        setTreatments(res.treatments);
       })
       .catch((e: Error) => setError(e.message));
   }, [project, version, rowId]);
@@ -45,6 +50,34 @@ export function LineageModal({ project, version, rowId, onClose }: Props) {
             </span>
           ))}
         </p>
+        {cleanRow && (
+          <div className="clean-row-box">
+            <strong>清洗后的值（结果行 {rowId}）</strong>
+            <ul className="stat-list">
+              {Object.entries(cleanRow)
+                .filter(([k]) => k !== "_id")
+                .map(([k, v]) => (
+                  <li key={k}><code>{k}</code>: {String(v)}</li>
+                ))}
+            </ul>
+          </div>
+        )}
+        <div className="treatments-box">
+          <strong>采用的处理（{treatments.length} 步）</strong>
+          {treatments.length === 0 && (
+            <p className="muted small">无处理记录。</p>
+          )}
+          <ol className="treatment-list">
+            {treatments.map((t) => (
+              <li key={t.step} className={`treatment treatment-${t.action}`}>
+                <span className="step-index">{t.step}</span>
+                <span className="treatment-label">{t.label}</span>
+                <span className="small muted">{describeAction(t.action, t.detail)}</span>
+                <span className="chip mono small">{t.origins.join(", ")}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
         <div className="table-wrap">
           <table>
             <thead>

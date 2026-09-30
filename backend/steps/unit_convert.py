@@ -53,6 +53,7 @@ def apply(rows, params):
     non_numeric = []
     out = []
     lineage = {}
+    effects = []
 
     for row in rows:
         unit = canonical_unit
@@ -62,6 +63,11 @@ def apply(rows, params):
         factor_offset = factors.get(unit)
         if factor_offset is None:
             unknown_units[unit] = unknown_units.get(unit, 0) + 1
+            effects.append({
+                "row_id": row["_id"], "action": "abort",
+                "detail": {"column": column, "unit": unit,
+                           "reason": "unknown_unit"},
+            })
             continue
 
         new_row = dict(row)
@@ -70,10 +76,27 @@ def apply(rows, params):
         if number is None:
             if not _is_missing(row.get(column)):
                 non_numeric.append(row["_id"])
+                effects.append({
+                    "row_id": row["_id"], "action": "abort",
+                    "detail": {"column": column, "unit": unit,
+                               "value": row.get(column),
+                               "reason": "non_numeric"},
+                })
             # missing value: leave untouched for a later missing-values step
         else:
-            new_row[column] = round(number * factor + offset, 6)
+            converted_value = round(number * factor + offset, 6)
+            new_row[column] = converted_value
             converted += 1
+            if unit != canonical_unit:
+                effects.append({
+                    "row_id": row["_id"], "action": "converted",
+                    "detail": {
+                        "column": column, "from_unit": unit,
+                        "to_unit": canonical_unit,
+                        "from_value": number, "value": converted_value,
+                        "factor": factor, "offset": offset,
+                    },
+                })
         if unit_column:
             new_row[unit_column] = canonical_unit
         out.append(new_row)
@@ -84,11 +107,15 @@ def apply(rows, params):
         units = ", ".join(sorted(unknown_units))
         problems.append(
             f"column '{column}' has {sum(unknown_units.values())} row(s) "
-            f"with unknown unit(s): {units}"
+            f"with unknown unit(s): {units} (rows: "
+            + ", ".join(e["row_id"] for e in effects
+                         if e["detail"].get("reason") == "unknown_unit")
+            + ")"
         )
     if non_numeric:
         problems.append(
-            f"column '{column}' has {len(non_numeric)} non-numeric value(s)"
+            f"column '{column}' has {len(non_numeric)} non-numeric value(s) "
+            f"(rows: {', '.join(non_numeric)})"
         )
     if problems:
         raise ValueError("; ".join(problems))
@@ -98,5 +125,8 @@ def apply(rows, params):
         "canonical_unit": canonical_unit,
         "converted_rows": converted,
         "mixed_units": sorted(factors),
+        "affected_row_ids": [e["row_id"] for e in effects
+                              if e["action"] == "converted"],
+        "effects": effects,
     }
     return out, lineage, stats

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FlaskConical, Plus, Play, Eye, Upload } from "lucide-react";
+import { FlaskConical, Plus, Play, Eye, Upload, RefreshCw } from "lucide-react";
 import { api } from "./api";
 import type {
   Manifest,
@@ -9,7 +9,7 @@ import type {
   StepType,
 } from "./types";
 import { StepEditor } from "./components/StepEditor";
-import { PreviewPanel } from "./components/PreviewPanel";
+import { StepReview } from "./components/StepReview";
 import { DataTable } from "./components/DataTable";
 import { VersionHistory } from "./components/VersionHistory";
 import { LineageModal } from "./components/LineageModal";
@@ -31,6 +31,7 @@ export default function App() {
   const [steps, setSteps] = useState<PipelineStep[]>([]);
   const [label, setLabel] = useState("");
   const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [accepted, setAccepted] = useState<boolean[]>([]);
   const [traceRow, setTraceRow] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,6 +55,7 @@ export default function App() {
   function openVersion(version: number) {
     setViewVersion(version);
     setPreview(null);
+    setAccepted([]);
     api.getVersion(project, version).then((res) => {
       setRows(res.rows);
       setColumns(res.columns);
@@ -78,10 +80,15 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      setPreview(await api.preview(project, steps));
+      const res = await api.preview(project, steps);
+      setPreview(res);
+      setAccepted((prev) =>
+        res.reports.map((_, i) => prev[i] === true)
+      );
     } catch (e) {
       setError(`预览失败，未改动任何数据：${(e as Error).message}`);
       setPreview(null);
+      setAccepted([]);
     } finally {
       setBusy(false);
     }
@@ -97,11 +104,38 @@ export default function App() {
       setSteps([]);
       setLabel("");
       setPreview(null);
+      setAccepted([]);
       openVersion(res.version);
     } catch (e) {
       setError(`执行失败，未发布新版本：${(e as Error).message}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  function editSteps(next: PipelineStep[]) {
+    setSteps(next);
+    setPreview(null);
+    setAccepted([]);
+  }
+
+  function acceptStep(index: number) {
+    setAccepted((prev) => prev.map((a, i) => (i === index ? true : a)));
+  }
+
+  function rejectStep(index: number) {
+    // 退回本步：本步及其下游的旧预览全部失效，必须重新预览；上游保留
+    setAccepted((prev) => prev.map((a, i) => (i < index ? a : false)));
+    setPreview(null);
+  }
+
+  async function loadSample(key: string) {
+    setError("");
+    try {
+      const s = await api.sample(key);
+      setCsvText(s.csv);
+    } catch (e) {
+      setError(`示例文件不可用：${(e as Error).message}`);
     }
   }
 
@@ -130,10 +164,12 @@ export default function App() {
                 disabled={!newName.trim() || !csvText.trim()}>
                 <Plus size={15} /> 创建工程
               </button>
-              <button className="btn" onClick={() =>
-                fetch("/sample.csv").then((r) => r.text()).then(setCsvText)
-                  .catch(() => setError("示例文件不可用，请手工粘贴"))}>
+              <button className="btn" onClick={() => loadSample("clean")}>
                 载入示例（单位混用 + 重复冲突）
+              </button>
+              <button className="btn" onClick={() => loadSample("bad")}
+                title="额外含一行非法温度值，用于验证失败不发布">
+                载入含非法值的示例
               </button>
             </div>
             {error && <p className="error">{error}</p>}
@@ -173,18 +209,18 @@ export default function App() {
                 index={i}
                 columns={columns}
                 onChange={(s) =>
-                  setSteps(steps.map((x) => (x.id === s.id ? s : x)))}
-                onRemove={() => setSteps(steps.filter((x) => x.id !== step.id))}
+                  editSteps(steps.map((x) => (x.id === s.id ? s : x)))}
+                onRemove={() => editSteps(steps.filter((x) => x.id !== step.id))}
               />
             ))}
             <div className="row">
-              <button className="btn" onClick={() => setSteps([...steps, newStep("missing_values")])}>
+              <button className="btn" onClick={() => editSteps([...steps, newStep("missing_values")])}>
                 <Plus size={14} /> 缺失值处理
               </button>
-              <button className="btn" onClick={() => setSteps([...steps, newStep("unit_convert")])}>
+              <button className="btn" onClick={() => editSteps([...steps, newStep("unit_convert")])}>
                 <Plus size={14} /> 单位换算
               </button>
-              <button className="btn" onClick={() => setSteps([...steps, newStep("dedup_merge")])}>
+              <button className="btn" onClick={() => editSteps([...steps, newStep("dedup_merge")])}>
                 <Plus size={14} /> 重复合并
               </button>
             </div>
@@ -197,25 +233,39 @@ export default function App() {
             </div>
             <div className="row">
               <button className="btn" disabled={!steps.length || busy} onClick={runPreview}>
-                <Eye size={15} /> 预览影响
+                {preview ? <RefreshCw size={15} /> : <Eye size={15} />}
+                {preview ? "重新预览全部步骤" : "预览全部步骤"}
               </button>
               <button
                 className="btn primary"
-                disabled={!steps.length || busy || !preview}
+                disabled={!steps.length || busy || !preview ||
+                  accepted.length !== steps.length || !accepted.every(Boolean)}
                 onClick={apply}
-                title={preview ? "" : "请先预览确认影响"}
+                title={preview && accepted.every(Boolean) ? "" : "请逐步预览并接受每一步"}
               >
                 <Play size={15} /> 执行并生成新版本
               </button>
             </div>
+            {preview && (
+              <p className="muted small">
+                已接受 {accepted.filter(Boolean).length}/{steps.length} 步；
+                退回任意一步后，旧的下游结果立即失效，需重新预览。
+              </p>
+            )}
             {error && <p className="error">{error}</p>}
           </section>
 
           {preview && (
             <section className="card">
-              <h2>执行前预览（不写盘）</h2>
-              <PreviewPanel preview={preview} />
-              <DataTable rows={preview.sample} columns={columns} maxRows={20} />
+              <h2>
+                <Eye size={16} /> 逐步预览（不写盘）：行数 {preview.row_count_before} → {preview.row_count_after}
+              </h2>
+              <StepReview
+                preview={preview}
+                accepted={accepted}
+                onAccept={acceptStep}
+                onReject={rejectStep}
+              />
             </section>
           )}
 

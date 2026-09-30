@@ -8,6 +8,14 @@ export interface PipelineStep {
 
 export interface StepStats {
   [key: string]: unknown;
+  affected_row_ids?: string[];
+  effects?: StepEffect[];
+}
+
+export interface StepEffect {
+  row_id: string;
+  action: "converted" | "filled" | "dropped" | "merged" | "abort";
+  detail: Record<string, any>;
 }
 
 export interface StepReport {
@@ -29,6 +37,16 @@ export interface PreviewResult {
   row_count_before: number;
   row_count_after: number;
   sample: Row[];
+  stages: { rows: Row[]; row_count: number; truncated: boolean }[];
+}
+
+export interface Treatment {
+  step: number;
+  type: StepType;
+  label: string;
+  action: string;
+  detail: Record<string, any>;
+  origins: string[];
 }
 
 export interface VersionMeta {

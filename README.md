@@ -41,14 +41,21 @@ cd frontend && node node_modules/vite/bin/vite.js build
 
 ## 快速体验
 
-1. 首页粘贴 CSV，或点「载入示例」（`examples/mixed_units_duplicates.csv`：
-   摄氏度/华氏度混用、空值、同一样本的重复且冲突记录）。
+1. 首页粘贴 CSV，或点「载入示例」：
+   - 干净示例 `examples/mixed_units_duplicates_clean.csv`：摄氏度/华氏度混用、
+     空值、同一样本的重复且冲突记录；
+   - 含非法值示例 `examples/mixed_units_duplicates.csv`：额外含一行 `hot`，
+     预览即报错（带行号），不发布任何版本。
 2. 添加「单位换算」：数值列 `temperature`，单位列 `temp_unit`，标准单位 `C`，
    规则 `C = factor 1`、`F = factor 0.5555556, offset -17.777778`。
 3. 添加「缺失值处理」：中位数填充 `temperature`、均值填充 `pressure`。
 4. 添加「重复记录合并」：主键 `sample_id`，数值列取均值。
-5. 「预览影响」确认行数 7 → 5 与每步统计，再「执行并生成新版本」。
-6. 在 `v1` 表格点任意行的来源图标，查看合并它的原始行（如 S1 ← r0001, r0004）。
+5. 「预览全部步骤」后逐步检查：每步都列出受影响行（换算/填充/删行/合并高亮）
+   与行数变化；逐一点「接受本步」。退回某一步会立即作废该步及其下游的旧预览，
+   修改后点「重新预览全部步骤」即按最新数据重算，不会残留旧结果。
+6. 全部步骤接受后「执行并生成新版本」；失败（如非法值、冲突中止）时不发布。
+7. 在 `v1` 表格点任意行的来源图标，查看清洗后的值、合并它的原始行
+   （如 S1 ← r0001, r0004）以及每一步采用的处理。工程随时可从左侧版本历史重开。
 
 ## HTTP API
 
@@ -57,7 +64,8 @@ cd frontend && node node_modules/vite/bin/vite.js build
 - `GET  /api/projects/{name}` manifest 与列信息
 - `GET  /api/projects/{name}/versions/{n}` 某版本数据与步骤报告
 - `GET  /api/projects/{name}/versions/{n}/lineage/{row_id}` 结果行的原始来源
-- `POST /api/projects/{name}/preview` 内存试跑返回影响，不写盘
+- `GET  /api/samples/{bad|clean}` 内置示例 CSV
+- `POST /api/projects/{name}/preview` 内存试跑，返回每步行快照与逐步统计，不写盘
 - `POST /api/projects/{name}/apply` 全部步骤成功后原子提交新版本
 
 ## 测试

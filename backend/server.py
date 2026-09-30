@@ -11,6 +11,60 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import pipeline, store
 
 
+EXAMPLES_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "examples",
+)
+
+
+def _treatments(version, row_id):
+    """List every processing step a result row went through.
+
+    Walks the per-step lineage backwards from the final row id; the
+    step's effect (converted / filled / dropped / merged / kept) is
+    attached with the original r000x ids it applies to.
+    """
+    reports = version.get("step_reports", [])
+    stage_lineages = version.get("stage_lineages")
+    global_lineage = version.get("lineage", {})
+    target_origins = set(global_lineage.get(row_id, [row_id]))
+    treatments = []
+    current_ids = {row_id}
+    for index, report in enumerate(reports, 1):
+        effects = {e["row_id"]: e for e in report.get("stats", {}).get("effects", [])}
+        local = stage_lineages[index - 1] if stage_lineages else None
+        if local is None:
+            hit_ids = current_ids & set(effects)
+        else:
+            hit_ids = {out_id for out_id in current_ids if out_id in local}
+        next_ids = set()
+        for hid in sorted(hit_ids):
+            effect = effects.get(hid)
+            action = effect["action"] if effect else "kept"
+            detail = effect["detail"] if effect else {}
+            origins = set()
+            if local is not None:
+                for src_id in local.get(hid, [hid]):
+                    origins.update(global_lineage.get(src_id, [src_id]))
+            else:
+                origins = set(global_lineage.get(hid, [hid]))
+            origins &= target_origins
+            treatments.append({
+                "step": index,
+                "type": report["type"],
+                "label": report["label"],
+                "action": action,
+                "detail": detail,
+                "origins": sorted(origins),
+            })
+            if action != "dropped":
+                next_ids.add(hid)
+        current_ids = next_ids
+        if not current_ids:
+            break
+    return treatments
+
+
 PROJECTS_ROOT = os.environ.get(
     "CLEANBENCH_DATA",
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -98,6 +152,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         parts = [p for p in self.path.split("?")[0].split("/") if p]
         try:
+            if parts[:2] == ["api", "samples"]:
+                samples = {
+                    "bad": "mixed_units_duplicates.csv",
+                    "clean": "mixed_units_duplicates_clean.csv",
+                }
+                if len(parts) == 2:
+                    return self._send(200, {"samples": sorted(samples)})
+                filename = samples.get(parts[2])
+                if not filename:
+                    return self._send(404, {"error": "unknown sample"})
+                with open(os.path.join(EXAMPLES_DIR, filename),
+                          encoding="utf-8") as fh:
+                    return self._send(200, {"name": parts[2], "csv": fh.read()})
             if parts == ["api", "projects"]:
                 return self._send(200, {"projects": store.list_projects(PROJECTS_ROOT)})
             if parts[:2] == ["api", "projects"] and len(parts) >= 3:
@@ -132,6 +199,9 @@ class Handler(BaseHTTPRequestHandler):
                             "row_id": row_id,
                             "origins": origins,
                             "origin_rows": [raw[o] for o in origins if o in raw],
+                            "clean_row": next((r for r in version["rows"]
+                                               if r["_id"] == row_id), None),
+                            "treatments": _treatments(version, row_id),
                         })
             return self._send(404, {"error": "not found"})
         except (ValueError, FileNotFoundError) as exc:
@@ -154,12 +224,18 @@ class Handler(BaseHTTPRequestHandler):
                 latest = store.load_version(project_dir, manifest["latest_version"])
                 spec = {"steps": body.get("steps", [])}
                 if parts[3] == "preview":
-                    rows, lineage, reports = pipeline.run(latest["rows"], spec)
+                    rows, lineage, reports, _, stage_rows = pipeline.run(
+                        latest["rows"], spec)
                     return self._send(200, {
                         "reports": reports,
                         "row_count_before": len(latest["rows"]),
                         "row_count_after": len(rows),
                         "sample": rows[:50],
+                        "stages": [
+                            {"rows": sr[:200], "row_count": len(sr),
+                             "truncated": len(sr) > 200}
+                            for sr in stage_rows
+                        ],
                     })
                 if parts[3] == "apply":
                     new_no, reports = pipeline.apply_spec(

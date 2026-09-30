@@ -59,6 +59,7 @@ def apply(rows, params):
     out = []
     lineage = {}
     conflicts = []
+    effects = []
     merged_groups = 0
     removed_rows = 0
 
@@ -73,6 +74,8 @@ def apply(rows, params):
         merged_groups += 1
         removed_rows += len(members) - 1
         representative = dict(members[0])
+        member_ids = [m["_id"] for m in members]
+        merged_columns = []
 
         for col in value_columns:
             values = [m.get(col) for m in members]
@@ -91,14 +94,24 @@ def apply(rows, params):
             })
             if col not in merge_columns:
                 representative[col] = values[0]
+                merged_columns.append({"column": col, "strategy": "keep_first",
+                                       "values": values})
             elif merge == "first":
                 representative[col] = values[0]
+                merged_columns.append({"column": col, "strategy": "first",
+                                       "values": values})
             elif merge == "last":
                 representative[col] = values[-1]
+                merged_columns.append({"column": col, "strategy": "last",
+                                       "values": values})
             elif merge == "mean":
                 nums = [_as_number(v) for v in values]
                 if all(n is not None for n in nums):
-                    representative[col] = round(sum(nums) / len(nums), 6)
+                    mean_value = round(sum(nums) / len(nums), 6)
+                    representative[col] = mean_value
+                    merged_columns.append({"column": col, "strategy": "mean",
+                                           "values": nums,
+                                           "value": mean_value})
                 else:
                     raise ValueError(
                         f"conflicting non-numeric values in '{col}' for "
@@ -116,6 +129,16 @@ def apply(rows, params):
 
         out.append(representative)
         lineage[representative["_id"]] = [m["_id"] for m in members]
+        effects.append({
+            "row_id": representative["_id"],
+            "action": "merged",
+            "detail": {
+                "keys": dict(zip(keys, key)),
+                "source_row_ids": member_ids,
+                "absorbed_row_ids": member_ids[1:],
+                "resolved_columns": merged_columns,
+            },
+        })
 
     stats = {
         "keys": keys,
@@ -123,5 +146,7 @@ def apply(rows, params):
         "duplicate_groups": merged_groups,
         "rows_removed": removed_rows,
         "conflicts": conflicts,
+        "affected_row_ids": [e["row_id"] for e in effects],
+        "effects": effects,
     }
     return out, lineage, stats

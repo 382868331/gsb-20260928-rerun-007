@@ -1,4 +1,4 @@
-import type { Manifest, PipelineStep, PreviewResult, Row, StepReport } from "./types";
+import type { Manifest, PipelineStep, PreviewResult, Row, StepReport, Treatment } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -48,7 +48,11 @@ export const api = {
     ),
 
   lineage: (name: string, version: number, rowId: string) =>
-    request<{ row_id: string; origins: string[]; origin_rows: Row[] }>(
+    request<{ row_id: string; origins: string[]; origin_rows: Row[];
+      clean_row: Row | null; treatments: Treatment[] }>(
       `/api/projects/${encodeURIComponent(name)}/versions/${version}/lineage/${rowId}`
     ),
+
+  sample: (key: string) =>
+    request<{ name: string; csv: string }>(`/api/samples/${encodeURIComponent(key)}`),
 };
