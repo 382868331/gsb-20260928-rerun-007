@@ -1,4 +1,8 @@
-export type StepType = "missing_values" | "unit_convert" | "dedup_merge";
+export type StepType =
+  | "missing_values"
+  | "number_check"
+  | "unit_convert"
+  | "dedup_merge";
 
 export interface PipelineStep {
   id: string;

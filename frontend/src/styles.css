@@ -302,6 +302,8 @@ th { background: #f8fafc; font-weight: 600; }
   color: #334155;
 }
 .badge.ok { background: #dcfce7; color: #166534; }
+.badge.warn { background: #fef3c7; color: #92400e; }
+.review-cell { background: #fef3c7; font-weight: 600; }
 .report-item.accepted { border-left-color: #16a34a; background: #f6fef9; }
 
 .affected-box {

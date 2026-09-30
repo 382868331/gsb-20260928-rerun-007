@@ -27,7 +27,7 @@ def _columns(rows):
     seen = []
     for row in rows:
         for key in row:
-            if key != "_id" and key not in seen:
+            if not key.startswith("_") and key not in seen:
                 seen.append(key)
     return seen
 
@@ -163,7 +163,10 @@ class Handler(BaseHTTPRequestHandler):
                 latest = store.load_version(project_dir, manifest["latest_version"])
                 if parts[3] == "preview":
                     spec = {"steps": body.get("steps", [])}
-                    rows, lineage, reports = pipeline.run(latest["rows"], spec)
+                    source_no = body.get("source_version", manifest["latest_version"])
+                    source = (latest if source_no == manifest["latest_version"]
+                              else store.load_version(project_dir, int(source_no)))
+                    rows, lineage, reports = pipeline.run(source["rows"], spec)
                     return self._send(200, {
                         "reports": reports,
                         "row_count_before": len(latest["rows"]),
@@ -172,8 +175,11 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 if parts[3] == "apply":
                     spec = {"steps": body.get("steps", [])}
+                    source_version = body.get("source_version")
                     new_no, reports = pipeline.apply_spec(
-                        project_dir, spec, label=body.get("label", ""))
+                        project_dir, spec, label=body.get("label", ""),
+                        source_version=(int(source_version)
+                                       if source_version is not None else None))
                     return self._send(201, {
                         "version": new_no,
                         "reports": reports,

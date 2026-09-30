@@ -13,17 +13,15 @@ lineage lists every source row absorbed into it, so a surviving result
 always tells which original records it came from.
 """
 
+import math
+
+from .numbers import parse_number
+
 
 def _as_number(value):
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
+    number = parse_number(value)
+    if number is not None and math.isfinite(number):
+        return number
     return None
 
 
@@ -49,7 +47,8 @@ def apply(rows, params):
             order.append(key)
         groups[key].append(row)
 
-    value_columns = [c for c in sorted({c for r in rows for c in r if c != "_id"})
+    value_columns = [c for c in sorted({c for row in rows for c in row
+                                       if not c.startswith("_")})
                      if c not in keys]
     if merge_columns is None:
         merge_columns = [c for c in value_columns

@@ -78,6 +78,28 @@ def _action_records(step_type, stats, lineage):
                 f"重复合并：主键 {item.get('keys')}，吸收 "
                 f"{', '.join(item.get('source_row_ids', []))}；冲突列：{conflicts}"
             )
+        elif step_type in ("number_check", "unit_convert") and item.get("issue"):
+            origins = _resolve_origins([item["row_id"]], lineage)
+            issue_labels = {
+                "missing": "缺失", "illegal": "非法文字/non-numeric value",
+                "nonfinite": "非有限数值（无穷/NaN）",
+                "out_of_range": "超出有限范围",
+            }
+            action_labels = {
+                "flag": "保留待核对", "drop": "排除该行",
+                "drop_row": "排除该行", "replace": "使用替代值",
+            }
+            stage = "换算前" if item.get("stage") == "pre_convert" else (
+                "换算后" if item.get("stage") == "post_convert" else "检查")
+            label = "数值检查" if step_type == "number_check" else "单位换算"
+            description = (
+                f"{label}（{stage}）：{item.get('column')} "
+                f"{issue_labels.get(item.get('issue'), item.get('issue'))}，"
+                f"原值 {item.get('original_value')!r} → "
+                f"{action_labels.get(item.get('action'), item.get('action'))}"
+            )
+            if item.get("after") is not None:
+                description += f" {item.get('after')}"
         elif item.get("action") == "drop_row":
             origins = _resolve_origins([item["row_id"]], lineage)
             description = f"缺失处理：删除该行（缺失列：{', '.join(item.get('columns', []))}）"
@@ -104,7 +126,7 @@ def _action_records(step_type, stats, lineage):
     return records
 
 
-def run(rows, spec):
+def run(rows, spec, base_lineage=None):
     """Run a spec over rows purely, without persisting anything.
 
     Returns (final_rows, global_lineage, step_reports).
@@ -113,7 +135,7 @@ def run(rows, spec):
     """
     validate_spec(spec)
     current = [dict(r) for r in rows]
-    global_lineage = {r["_id"]: [r["_id"]] for r in current}
+    global_lineage = dict(base_lineage or {r["_id"]: [r["_id"]] for r in current})
     reports = []
 
     for step in spec["steps"]:
@@ -155,7 +177,7 @@ def atomic_write_json(path, payload):
         raise
 
 
-def apply_spec(project_dir, spec, label=""):
+def apply_spec(project_dir, spec, label="", source_version=None):
     """Execute spec against the project's latest version and commit a new one.
 
     The new version is fully built in memory first; only when all steps
@@ -164,15 +186,21 @@ def apply_spec(project_dir, spec, label=""):
     manifest = json.load(open(os.path.join(project_dir, "manifest.json"),
                               encoding="utf-8"))
     latest_no = manifest["latest_version"]
-    latest_path = os.path.join(project_dir, "versions", f"v{latest_no}.json")
-    latest = json.load(open(latest_path, encoding="utf-8"))
+    source_no = latest_no if source_version is None else source_version
+    existing = {v["version"] for v in manifest["versions"]}
+    if source_no not in existing:
+        raise ValueError(f"source version v{source_no} not found")
+    source_path = os.path.join(project_dir, "versions", f"v{source_no}.json")
+    with open(source_path, encoding="utf-8") as handle:
+        source = json.load(handle)
 
-    final_rows, lineage, reports = run(latest["rows"], spec)
+    final_rows, lineage, reports = run(
+        source["rows"], spec, base_lineage=source.get("lineage"))
 
     new_no = latest_no + 1
     version_payload = {
         "version": new_no,
-        "created_from": latest_no,
+        "created_from": source_no,
         "rows": final_rows,
         "lineage": lineage,
         "step_reports": reports,
@@ -190,7 +218,7 @@ def apply_spec(project_dir, spec, label=""):
     # unreferenced file, never a half-visible version.
     manifest["versions"].append({
         "version": new_no,
-        "created_from": latest_no,
+        "created_from": source_no,
         "label": label,
         "steps": [{"type": s["type"], "params": s.get("params", {})}
                   for s in spec["steps"]],

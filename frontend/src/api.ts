@@ -29,19 +29,23 @@ export const api = {
       `/api/projects/${encodeURIComponent(name)}/versions/${version}`
     ),
 
-  preview: (name: string, steps: PipelineStep[]) =>
+  preview: (name: string, steps: PipelineStep[], sourceVersion?: number) =>
     request<PreviewResult>(`/api/projects/${encodeURIComponent(name)}/preview`, {
       method: "POST",
-      body: JSON.stringify({ steps: steps.map(({ type, params }) => ({ type, params })) }),
+      body: JSON.stringify({
+        source_version: sourceVersion,
+        steps: steps.map(({ type, params }) => ({ type, params })),
+      }),
     }),
 
-  apply: (name: string, label: string, steps: PipelineStep[]) =>
+  apply: (name: string, label: string, steps: PipelineStep[], sourceVersion?: number) =>
     request<{ version: number; reports: StepReport[] }>(
       `/api/projects/${encodeURIComponent(name)}/apply`,
       {
         method: "POST",
         body: JSON.stringify({
           label,
+          source_version: sourceVersion,
           steps: steps.map(({ type, params }) => ({ type, params })),
         }),
       }

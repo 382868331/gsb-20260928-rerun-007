@@ -5,35 +5,28 @@ params:
   strategy: "drop_row" | "fill_constant" | "fill_mean" | "fill_median" | "fill_mode"
   fill_value: any           # required for fill_constant
 """
+import math
 from statistics import mean, median
 
-
-MISSING_TOKENS = {"", "na", "nan", "null", "none", "n/a"}
+from .numbers import is_missing, parse_number
 
 
 def _is_missing(value):
-    return value is None or (
-        isinstance(value, str) and value.strip().lower() in MISSING_TOKENS
-    )
+    return is_missing(value)
 
 
 def _as_number(value):
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
+    """Finite numbers only: infinity text is not a fillable measurement."""
+    number = parse_number(value)
+    if number is not None and math.isfinite(number):
+        return number
     return None
 
 
 def apply(rows, params):
     strategy = params.get("strategy", "drop_row")
     columns = params.get("columns") or sorted(
-        {key for row in rows for key in row if key != "_id"}
+        {key for row in rows for key in row if not key.startswith("_")}
     )
     fill_value = params.get("fill_value")
 
@@ -86,6 +79,8 @@ def apply(rows, params):
             continue
         new_row = dict(row)
         for col in missing_here:
+            new_row["_review"] = [tag for tag in new_row.get("_review", [])
+                                   if not tag.startswith(f"{col}:")]
             if strategy == "fill_constant":
                 new_row[col] = fill_value
                 filled += 1

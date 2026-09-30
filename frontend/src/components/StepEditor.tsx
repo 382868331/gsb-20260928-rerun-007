@@ -3,9 +3,88 @@ import type { PipelineStep, StepType } from "../types";
 
 const STEP_TYPES: { value: StepType; label: string; hint: string }[] = [
   { value: "missing_values", label: "缺失值处理", hint: "删除或填充缺失单元格" },
+  { value: "number_check", label: "数值有效性检查", hint: "区分缺失/非法文字/无穷/越界，按来源设置策略" },
   { value: "unit_convert", label: "单位换算", hint: "混排单位归一到标准单位" },
   { value: "dedup_merge", label: "重复记录合并", hint: "按主键合并冲突记录" },
 ];
+
+const ISSUES = [
+  { key: "missing", label: "缺失" },
+  { key: "illegal", label: "非法文字" },
+  { key: "nonfinite", label: "无穷/NaN" },
+  { key: "out_of_range", label: "超出有限范围" },
+] as const;
+
+type IssueKey = (typeof ISSUES)[number]["key"];
+
+interface PolicyRow {
+  key: IssueKey;
+  label: string;
+}
+
+function PolicyTable({
+  issues,
+  value,
+  onChange,
+  defaults,
+}: {
+  issues: readonly PolicyRow[];
+  value: Record<string, { action?: string; replacement?: number }> | undefined;
+  onChange: (next: Record<string, unknown>) => void;
+  defaults?: Partial<Record<string, string>>;
+}) {
+  const policies = value ?? {};
+  const fallbackAction = (issue: string) => defaults?.[issue] ?? "error";
+  const setPolicy = (issue: string, patch: Record<string, unknown>) =>
+    onChange({ ...policies, [issue]: { ...(policies[issue] ?? {}), ...patch } });
+  return (
+    <table className="rules-table">
+      <thead>
+        <tr><th>异常来源</th><th>处理策略</th><th>明确替代值</th></tr>
+      </thead>
+      <tbody>
+        {issues.map(({ key, label }) => {
+          const entry = policies[key] ?? {};
+          return (
+            <tr key={key}>
+              <td>{label}</td>
+              <td>
+                <select
+                  value={(entry.action as string) ?? fallbackAction(key)}
+                  onChange={(e) => setPolicy(key, { action: e.target.value })}
+                >
+                  <option value="error">中止执行</option>
+                  <option value="flag">保留待核对</option>
+                  <option value="drop">排除该行</option>
+                  <option value="replace">使用替代值</option>
+                </select>
+              </td>
+              <td>
+                <input
+                  type="number"
+                  step="any"
+                  disabled={entry.action !== "replace"}
+                  value={entry.replacement ?? ""}
+                  placeholder="必填有限数值"
+                  onChange={(e) =>
+                    setPolicy(key, { replacement: e.target.value === "" ? undefined : Number(e.target.value) })}
+                />
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function ColumnPicker({ columns, selected, onToggle }: {
+  columns: string[];
+  selected: string[];
+  onToggle: (col: string) => void;
+}) {
+  return <CheckboxList columns={columns} selected={selected} onToggle={onToggle} />;
+}
 
 interface Props {
   step: PipelineStep;
@@ -109,6 +188,45 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
         </div>
       )}
 
+      {step.type === "number_check" && (
+        <div className="step-body">
+          <div>
+            <span className="small muted">检查列（不选 = 全部列）</span>
+            <ColumnPicker
+              columns={columns}
+              selected={(p.columns as string[]) ?? []}
+              onToggle={(col) => {
+                const current = new Set((p.columns as string[]) ?? []);
+                current.has(col) ? current.delete(col) : current.add(col);
+                update({ columns: [...current] });
+              }}
+            />
+          </div>
+          <label>
+            允许下限（有限值，可空）
+            <input type="number" step="any" value={String(p.min_value ?? "")}
+              placeholder="例如 -273.15"
+              onChange={(e) => update({ min_value: e.target.value || null })} />
+          </label>
+          <label>
+            允许上限（有限值，可空）
+            <input type="number" step="any" value={String(p.max_value ?? "")}
+              onChange={(e) => update({ max_value: e.target.value || null })} />
+          </label>
+          <div>
+            <span className="small muted">
+              按异常来源分别设置；替代值必须明确填写，系统不会改成 0。
+            </span>
+            <PolicyTable
+              issues={ISSUES}
+              value={p.policies as Record<string, { action?: string; replacement?: number }>}
+              onChange={(policies) => update({ policies })}
+              defaults={{ missing: "flag" }}
+            />
+          </div>
+        </div>
+      )}
+
       {step.type === "unit_convert" && (
         <div className="step-body">
           <label>
@@ -143,6 +261,43 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
               placeholder="例如 C"
             />
           </label>
+          <div>
+            <span className="small muted">换算前有效性（原值检查，替代值按标准单位填写）</span>
+            <PolicyTable
+              issues={ISSUES}
+              value={p.policies as Record<string, { action?: string; replacement?: number }>}
+              onChange={(policies) => update({ policies })}
+              defaults={{ missing: "flag" }}
+            />
+            <label>
+              原值允许下限（可空）
+              <input type="number" step="any" value={String(p.min_value ?? "")}
+                onChange={(e) => update({ min_value: e.target.value || null })} />
+            </label>
+            <label>
+              原值允许上限（可空）
+              <input type="number" step="any" value={String(p.max_value ?? "")}
+                onChange={(e) => update({ max_value: e.target.value || null })} />
+            </label>
+          </div>
+          <div>
+            <span className="small muted">换算后有效性（结果必须有限且落在范围内）</span>
+            <PolicyTable
+              issues={ISSUES.filter((i) => i.key === "nonfinite" || i.key === "out_of_range")}
+              value={p.post_policies as Record<string, { action?: string; replacement?: number }>}
+              onChange={(post_policies) => update({ post_policies })}
+            />
+            <label>
+              结果允许下限（可空）
+              <input type="number" step="any" value={String(p.post_min_value ?? "")}
+                onChange={(e) => update({ post_min_value: e.target.value || null })} />
+            </label>
+            <label>
+              结果允许上限（可空）
+              <input type="number" step="any" value={String(p.post_max_value ?? "")}
+                onChange={(e) => update({ post_max_value: e.target.value || null })} />
+            </label>
+          </div>
           <div>
             <span className="small muted">
               换算规则：标准值 = 原始值 × factor + offset（标准单位自身 factor=1）

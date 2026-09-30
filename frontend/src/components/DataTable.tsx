@@ -12,6 +12,7 @@ interface Props {
 
 export function DataTable({ rows, columns, version, onTrace, maxRows, highlightIds }: Props) {
   const shown = maxRows ? rows.slice(0, maxRows) : rows;
+  const hasReview = rows.some((r) => Array.isArray(r._review) && r._review.length);
   return (
     <div className="table-wrap">
       <table>
@@ -21,18 +22,26 @@ export function DataTable({ rows, columns, version, onTrace, maxRows, highlightI
             {columns.map((c) => (
               <th key={c}>{c}</th>
             ))}
+            {hasReview ? <th>待核对</th> : null}
             {onTrace ? <th>来源</th> : null}
           </tr>
         </thead>
         <tbody>
           {shown.map((row) => {
+            const review = Array.isArray(row._review) ? (row._review as string[]) : [];
+            const flaggedCols = new Set(review.map((tag) => tag.split(":")[0]));
             const cells = columns.map((c) => (
-              <td key={c}>{String(row[c] ?? "")}</td>
+              <td key={c} className={flaggedCols.has(c) ? "review-cell" : undefined}>
+                {String(row[c] ?? "")}
+              </td>
             ));
             return (
               <tr key={row._id} className={highlightIds?.has(row._id) ? "affected-row" : undefined}>
                 <td className="mono">{row._id}</td>
                 {cells}
+                {hasReview ? (
+                  <td>{review.length ? <span className="badge warn">待核对</span> : null}</td>
+                ) : null}
                 {onTrace ? (
                   <td>
                     <button

@@ -18,7 +18,11 @@ let stepSeq = 0;
 const newStep = (type: StepType): PipelineStep => ({
   id: `s${Date.now()}-${stepSeq++}`,
   type,
-  params: type === "dedup_merge" ? { merge: "mean", on_conflict: "keep_all" } : {},
+  params: type === "dedup_merge"
+    ? { merge: "mean", on_conflict: "keep_all" }
+    : type === "number_check"
+      ? { policies: {} }
+      : {},
 });
 
 export default function App() {
@@ -27,6 +31,7 @@ export default function App() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [viewVersion, setViewVersion] = useState(0);
+  const [sourceVersion, setSourceVersion] = useState(0);
   const [rows, setRows] = useState<Row[]>([]);
   const [steps, setSteps] = useState<PipelineStep[]>([]);
   const [label, setLabel] = useState("");
@@ -49,6 +54,7 @@ export default function App() {
       setManifest(info.manifest);
       setColumns(info.columns);
       openVersion(info.manifest.latest_version);
+      setSourceVersion(info.manifest.latest_version);
     });
   }, [project]);
 
@@ -89,7 +95,7 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      setPreview(await api.preview(project, steps));
+      setPreview(await api.preview(project, steps, sourceVersion));
       setAccepted(new Set());
     } catch (e) {
       setError(`预览失败，未改动任何数据：${(e as Error).message}`);
@@ -103,12 +109,13 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const res = await api.apply(project, label, steps);
+      const res = await api.apply(project, label, steps, sourceVersion);
       const info = await api.getProject(project);
       setManifest(info.manifest);
       setSteps([]);
       setLabel("");
       invalidatePreview();
+      setSourceVersion(res.version);
       openVersion(res.version);
     } catch (e) {
       setError(`执行失败，未发布新版本：${(e as Error).message}`);
@@ -177,7 +184,23 @@ export default function App() {
         )}
         <main className="main-col">
           <section className="card">
-            <h2>处理流水线（v{manifest?.latest_version} → 新版本）</h2>
+            <h2>处理流水线（v{sourceVersion} → 新版本）</h2>
+            <label className="small muted">
+              基于版本（可选择历史成功版本分叉对比，旧版本保持原样）
+              <select
+                value={sourceVersion}
+                onChange={(e) => {
+                  setSourceVersion(Number(e.target.value));
+                  invalidatePreview();
+                }}
+              >
+                {manifest?.versions.map((v) => (
+                  <option key={v.version} value={v.version}>
+                    v{v.version}{v.label ? ` - ${v.label}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
             {steps.map((step, i) => (
               <StepEditor
                 key={step.id}
@@ -192,6 +215,9 @@ export default function App() {
             <div className="row">
               <button className="btn" onClick={() => patchSteps([...steps, newStep("missing_values")])}>
                 <Plus size={14} /> 缺失值处理
+              </button>
+              <button className="btn" onClick={() => patchSteps([...steps, newStep("number_check")])}>
+                <Plus size={14} /> 数值有效性检查
               </button>
               <button className="btn" onClick={() => patchSteps([...steps, newStep("unit_convert")])}>
                 <Plus size={14} /> 单位换算
