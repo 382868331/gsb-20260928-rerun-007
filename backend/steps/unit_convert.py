@@ -51,6 +51,7 @@ def apply(rows, params):
     converted = 0
     unknown_units = {}
     non_numeric = []
+    affected_rows = []
     out = []
     lineage = {}
 
@@ -72,8 +73,17 @@ def apply(rows, params):
                 non_numeric.append(row["_id"])
             # missing value: leave untouched for a later missing-values step
         else:
-            new_row[column] = round(number * factor + offset, 6)
+            converted_value = round(number * factor + offset, 6)
+            new_row[column] = converted_value
             converted += 1
+            if unit != canonical_unit:
+                affected_rows.append({
+                    "row_id": row["_id"],
+                    "column": column,
+                    "before": row.get(column),
+                    "after": converted_value,
+                    "unit": unit,
+                })
         if unit_column:
             new_row[unit_column] = canonical_unit
         out.append(new_row)
@@ -98,5 +108,6 @@ def apply(rows, params):
         "canonical_unit": canonical_unit,
         "converted_rows": converted,
         "mixed_units": sorted(factors),
+        "affected_rows": affected_rows,
     }
     return out, lineage, stats

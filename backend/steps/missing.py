@@ -69,6 +69,7 @@ def apply(rows, params):
     affected = 0
     dropped = 0
     filled = 0
+    affected_rows = []
     out = []
     lineage = {}
 
@@ -77,16 +78,31 @@ def apply(rows, params):
         affected += len(missing_here)
         if missing_here and strategy == "drop_row":
             dropped += 1
+            affected_rows.append({
+                "row_id": row["_id"],
+                "columns": missing_here,
+                "action": "drop_row",
+            })
             continue
         new_row = dict(row)
         for col in missing_here:
             if strategy == "fill_constant":
                 new_row[col] = fill_value
                 filled += 1
+                affected_rows.append({
+                    "row_id": row["_id"], "column": col,
+                    "before": row.get(col), "after": fill_value,
+                    "action": "fill_constant",
+                })
             elif strategy in ("fill_mean", "fill_median", "fill_mode"):
                 if col in fills:
                     new_row[col] = fills[col]
                     filled += 1
+                    affected_rows.append({
+                        "row_id": row["_id"], "column": col,
+                        "before": row.get(col), "after": fills[col],
+                        "action": strategy,
+                    })
                 # No fill available (all missing / non-numeric): leave as-is
         out.append(new_row)
         lineage[new_row["_id"]] = [row["_id"]]
@@ -97,5 +113,6 @@ def apply(rows, params):
         "missing_cells": affected,
         "rows_dropped": dropped,
         "cells_filled": filled,
+        "affected_rows": affected_rows,
     }
     return out, lineage, stats

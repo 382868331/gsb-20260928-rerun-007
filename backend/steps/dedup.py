@@ -61,6 +61,7 @@ def apply(rows, params):
     conflicts = []
     merged_groups = 0
     removed_rows = 0
+    affected_rows = []
 
     for key in order:
         members = groups[key]
@@ -116,6 +117,14 @@ def apply(rows, params):
 
         out.append(representative)
         lineage[representative["_id"]] = [m["_id"] for m in members]
+        affected_rows.append({
+            "row_id": representative["_id"],
+            "source_row_ids": [m["_id"] for m in members],
+            "keys": dict(zip(keys, key)),
+            "conflict_columns": sorted({c["column"] for c in conflicts
+                                        if all(c["keys"].get(k) == v
+                                               for k, v in zip(keys, key))}),
+        })
 
     stats = {
         "keys": keys,
@@ -123,5 +132,6 @@ def apply(rows, params):
         "duplicate_groups": merged_groups,
         "rows_removed": removed_rows,
         "conflicts": conflicts,
+        "affected_rows": affected_rows,
     }
     return out, lineage, stats

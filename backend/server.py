@@ -128,10 +128,19 @@ class Handler(BaseHTTPRequestHandler):
                             raise ValueError(f"row '{row_id}' not in v{version_no}")
                         v0 = store.load_version(project_dir, 0)
                         raw = {r["_id"]: r for r in v0["rows"]}
+                        timeline = []
+                        for step_info in version.get("step_actions", []):
+                            for action in step_info.get("actions", []):
+                                if row_id in action.get("origins", []):
+                                    timeline.append({
+                                        "step": step_info["label"],
+                                        "description": action["description"],
+                                    })
                         return self._send(200, {
                             "row_id": row_id,
                             "origins": origins,
                             "origin_rows": [raw[o] for o in origins if o in raw],
+                            "timeline": timeline,
                         })
             return self._send(404, {"error": "not found"})
         except (ValueError, FileNotFoundError) as exc:
@@ -152,16 +161,17 @@ class Handler(BaseHTTPRequestHandler):
                 project_dir = store.project_path(PROJECTS_ROOT, name)
                 manifest = store.load_manifest(project_dir)
                 latest = store.load_version(project_dir, manifest["latest_version"])
-                spec = {"steps": body.get("steps", [])}
                 if parts[3] == "preview":
+                    spec = {"steps": body.get("steps", [])}
                     rows, lineage, reports = pipeline.run(latest["rows"], spec)
                     return self._send(200, {
                         "reports": reports,
                         "row_count_before": len(latest["rows"]),
                         "row_count_after": len(rows),
-                        "sample": rows[:50],
+                        "sample": rows,
                     })
                 if parts[3] == "apply":
+                    spec = {"steps": body.get("steps", [])}
                     new_no, reports = pipeline.apply_spec(
                         project_dir, spec, label=body.get("label", ""))
                     return self._send(201, {

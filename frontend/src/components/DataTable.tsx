@@ -7,9 +7,10 @@ interface Props {
   version?: number;
   onTrace?: (rowId: string) => void;
   maxRows?: number;
+  highlightIds?: Set<string>;
 }
 
-export function DataTable({ rows, columns, version, onTrace, maxRows }: Props) {
+export function DataTable({ rows, columns, version, onTrace, maxRows, highlightIds }: Props) {
   const shown = maxRows ? rows.slice(0, maxRows) : rows;
   return (
     <div className="table-wrap">
@@ -29,7 +30,7 @@ export function DataTable({ rows, columns, version, onTrace, maxRows }: Props) {
               <td key={c}>{String(row[c] ?? "")}</td>
             ));
             return (
-              <tr key={row._id}>
+              <tr key={row._id} className={highlightIds?.has(row._id) ? "affected-row" : undefined}>
                 <td className="mono">{row._id}</td>
                 {cells}
                 {onTrace ? (

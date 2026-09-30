@@ -17,6 +17,13 @@ export interface StepReport {
   stats: StepStats;
   row_count_before: number;
   row_count_after: number;
+  actions?: StepAction[];
+}
+
+export interface StepAction {
+  origins: string[];
+  description: string;
+  detail: Record<string, unknown>;
 }
 
 export interface Row {

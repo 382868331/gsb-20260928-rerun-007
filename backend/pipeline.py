@@ -55,6 +55,55 @@ def _compose(global_lineage, local_lineage):
     return composed
 
 
+def _resolve_origins(row_ids, lineage):
+    """Map step-level row ids back to original (v0) row ids."""
+    origins = []
+    seen = set()
+    for row_id in row_ids:
+        for origin in lineage.get(row_id, [row_id]):
+            if origin not in seen:
+                seen.add(origin)
+                origins.append(origin)
+    return origins
+
+
+def _action_records(step_type, stats, lineage):
+    """Turn a step's affected_rows detail into origin-keyed action records."""
+    records = []
+    for item in stats.get("affected_rows", []):
+        if step_type == "dedup_merge":
+            origins = _resolve_origins(item.get("source_row_ids", []), lineage)
+            conflicts = ", ".join(item.get("conflict_columns") or []) or "无"
+            description = (
+                f"重复合并：主键 {item.get('keys')}，吸收 "
+                f"{', '.join(item.get('source_row_ids', []))}；冲突列：{conflicts}"
+            )
+        elif item.get("action") == "drop_row":
+            origins = _resolve_origins([item["row_id"]], lineage)
+            description = f"缺失处理：删除该行（缺失列：{', '.join(item.get('columns', []))}）"
+        else:
+            origins = _resolve_origins([item["row_id"]], lineage)
+            label = {
+                "fill_constant": "固定值填充",
+                "fill_mean": "均值填充",
+                "fill_median": "中位数填充",
+                "fill_mode": "众数填充",
+            }.get(item.get("action"), "填充")
+            if step_type == "unit_convert":
+                label = "单位换算"
+            column = item.get("column", "")
+            description = (
+                f"{label}：{column} {item.get('before')} "
+                f"{item.get('unit', '')} → {item.get('after')}".rstrip()
+            )
+        records.append({
+            "origins": origins,
+            "description": description,
+            "detail": item,
+        })
+    return records
+
+
 def run(rows, spec):
     """Run a spec over rows purely, without persisting anything.
 
@@ -73,6 +122,7 @@ def run(rows, spec):
             current, step.get("params", {})
         )
         global_lineage = _compose(global_lineage, local_lineage)
+        actions = _action_records(step_type, stats, global_lineage)
         reports.append({
             "type": step_type,
             "label": STEP_LABELS.get(step_type, step_type),
@@ -80,6 +130,7 @@ def run(rows, spec):
             "stats": stats,
             "row_count_before": len(current),
             "row_count_after": len(next_rows),
+            "actions": actions,
         })
         current = next_rows
 
@@ -125,6 +176,11 @@ def apply_spec(project_dir, spec, label=""):
         "rows": final_rows,
         "lineage": lineage,
         "step_reports": reports,
+        "step_actions": [
+            {"type": report["type"], "label": report["label"],
+             "actions": report.get("actions", [])}
+            for report in reports
+        ],
     }
     versions_dir = os.path.join(project_dir, "versions")
     new_path = os.path.join(versions_dir, f"v{new_no}.json")

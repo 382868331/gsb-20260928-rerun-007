@@ -48,7 +48,7 @@ export const api = {
     ),
 
   lineage: (name: string, version: number, rowId: string) =>
-    request<{ row_id: string; origins: string[]; origin_rows: Row[] }>(
+    request<{ row_id: string; origins: string[]; origin_rows: Row[]; timeline: { step: string; description: string }[] }>(
       `/api/projects/${encodeURIComponent(name)}/versions/${version}/lineage/${rowId}`
     ),
 };

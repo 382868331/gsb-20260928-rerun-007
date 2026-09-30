@@ -67,7 +67,7 @@ class ApiTests(unittest.TestCase):
 
         status, res = call("GET", "/api/projects/lab")
         self.assertEqual(200, status)
-        self.assertEqual(7, res["row_count"])
+        self.assertEqual(8, res["row_count"])
         self.assertIn("temperature", res["columns"])
 
         spec = {
@@ -87,28 +87,52 @@ class ApiTests(unittest.TestCase):
             ]
         }
         status, preview = call("POST", "/api/projects/lab/preview", spec)
-        self.assertEqual(200, status)
-        self.assertEqual(5, preview["row_count_after"])
-        self.assertIn("converted_rows", preview["reports"][0]["stats"])
 
-        # preview must not create a version
+        # The shipped sample deliberately contains an illegal numeric value
+        # (S6 temperature 'ERR'): preview/apply must fail and publish nothing.
+        self.assertEqual(400, status)
+        self.assertIn("non-numeric", preview["error"])
         status, info = call("GET", "/api/projects/lab")
         self.assertEqual(0, info["manifest"]["latest_version"])
+        status, failed = call("POST", "/api/projects/lab/apply", spec)
+        self.assertEqual(400, status)
+        self.assertIn("non-numeric", failed["error"])
 
-        status, applied = call("POST", "/api/projects/lab/apply", spec)
+        # Fix the raw value (100F -> valid), re-run: success is published and
+        # can be reopened later.
+        clean_csv = CSV.replace("S6,2026-09-05,ERR,F,100.1",
+                                "S6,2026-09-05,100.0,F,100.1")
+        call("POST", "/api/projects", {"name": "lab2", "csv": clean_csv})
+
+        # preview exposes which rows each step touches (before publishing)
+        status, prev = call("POST", "/api/projects/lab2/preview", spec)
+        self.assertEqual(200, status)
+        unit_affected = prev["reports"][0]["stats"]["affected_rows"]
+        affected_ids = {row["row_id"] for row in unit_affected}
+        self.assertIn("r0002", affected_ids)  # 77F
+        self.assertIn("r0007", affected_ids)  # 212F
+
+        status, applied = call("POST", "/api/projects/lab2/apply", spec)
         self.assertEqual(201, status)
         self.assertEqual(1, applied["version"])
 
-        status, v1 = call("GET", "/api/projects/lab/versions/1")
+        status, v1 = call("GET", "/api/projects/lab2/versions/1")
         self.assertEqual(200, status)
-        self.assertEqual(5, len(v1["rows"]))
+        self.assertEqual(6, len(v1["rows"]))
 
         s1 = next(r for r in v1["rows"] if r["sample_id"] == "S1")
         status, lineage = call(
-            "GET", f"/api/projects/lab/versions/1/lineage/{s1['_id']}")
+            "GET", f"/api/projects/lab2/versions/1/lineage/{s1['_id']}")
         self.assertEqual(200, status)
         self.assertEqual(["r0001", "r0004"], lineage["origins"])
         self.assertEqual(2, len(lineage["origin_rows"]))
+        descriptions = " ".join(item["description"] for item in lineage["timeline"])
+        self.assertIn("重复合并", descriptions)
+
+        # successful project can be reopened from disk
+        status, info2 = call("GET", "/api/projects/lab2")
+        self.assertEqual(200, status)
+        self.assertEqual(1, info2["manifest"]["latest_version"])
 
     def test_failed_unit_step_returns_error_and_no_version(self):
         call("POST", "/api/projects", {"name": "lab", "csv": CSV})
@@ -117,7 +141,8 @@ class ApiTests(unittest.TestCase):
             "canonical_unit": "C", "rules": {"C": 1}}}]}
         status, res = call("POST", "/api/projects/lab/apply", bad)
         self.assertEqual(400, status)
-        self.assertIn("unknown unit", res["error"])
+        self.assertTrue("unknown unit" in res["error"]
+                        or "non-numeric" in res["error"])
         status, info = call("GET", "/api/projects/lab")
         self.assertEqual(0, info["manifest"]["latest_version"])
 

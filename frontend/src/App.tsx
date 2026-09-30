@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FlaskConical, Plus, Play, Eye, Upload } from "lucide-react";
+import { FlaskConical, Plus, Play, Eye, Upload, RefreshCw } from "lucide-react";
 import { api } from "./api";
 import type {
   Manifest,
@@ -31,6 +31,7 @@ export default function App() {
   const [steps, setSteps] = useState<PipelineStep[]>([]);
   const [label, setLabel] = useState("");
   const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [accepted, setAccepted] = useState<Set<number>>(new Set());
   const [traceRow, setTraceRow] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -60,6 +61,16 @@ export default function App() {
     });
   }
 
+  function invalidatePreview() {
+    setPreview(null);
+    setAccepted(new Set());
+  }
+
+  function patchSteps(next: PipelineStep[]) {
+    setSteps(next);
+    invalidatePreview();
+  }
+
   async function upload() {
     setError("");
     try {
@@ -79,9 +90,10 @@ export default function App() {
     setBusy(true);
     try {
       setPreview(await api.preview(project, steps));
+      setAccepted(new Set());
     } catch (e) {
       setError(`预览失败，未改动任何数据：${(e as Error).message}`);
-      setPreview(null);
+      invalidatePreview();
     } finally {
       setBusy(false);
     }
@@ -96,7 +108,7 @@ export default function App() {
       setManifest(info.manifest);
       setSteps([]);
       setLabel("");
-      setPreview(null);
+      invalidatePreview();
       openVersion(res.version);
     } catch (e) {
       setError(`执行失败，未发布新版本：${(e as Error).message}`);
@@ -173,18 +185,18 @@ export default function App() {
                 index={i}
                 columns={columns}
                 onChange={(s) =>
-                  setSteps(steps.map((x) => (x.id === s.id ? s : x)))}
-                onRemove={() => setSteps(steps.filter((x) => x.id !== step.id))}
+                  patchSteps(steps.map((x) => (x.id === s.id ? s : x)))}
+                onRemove={() => patchSteps(steps.filter((x) => x.id !== step.id))}
               />
             ))}
             <div className="row">
-              <button className="btn" onClick={() => setSteps([...steps, newStep("missing_values")])}>
+              <button className="btn" onClick={() => patchSteps([...steps, newStep("missing_values")])}>
                 <Plus size={14} /> 缺失值处理
               </button>
-              <button className="btn" onClick={() => setSteps([...steps, newStep("unit_convert")])}>
+              <button className="btn" onClick={() => patchSteps([...steps, newStep("unit_convert")])}>
                 <Plus size={14} /> 单位换算
               </button>
-              <button className="btn" onClick={() => setSteps([...steps, newStep("dedup_merge")])}>
+              <button className="btn" onClick={() => patchSteps([...steps, newStep("dedup_merge")])}>
                 <Plus size={14} /> 重复合并
               </button>
             </div>
@@ -199,11 +211,15 @@ export default function App() {
               <button className="btn" disabled={!steps.length || busy} onClick={runPreview}>
                 <Eye size={15} /> 预览影响
               </button>
+              <button className="btn" disabled={!steps.length || busy} onClick={runPreview}
+                title="修改或退回后重新计算全部下游预览">
+                <RefreshCw size={15} /> 重新计算预览
+              </button>
               <button
                 className="btn primary"
-                disabled={!steps.length || busy || !preview}
+                disabled={!steps.length || busy || !preview || accepted.size !== steps.length}
                 onClick={apply}
-                title={preview ? "" : "请先预览确认影响"}
+                title={preview && accepted.size === steps.length ? "" : "请先预览并逐步接受全部步骤"}
               >
                 <Play size={15} /> 执行并生成新版本
               </button>
@@ -214,8 +230,20 @@ export default function App() {
           {preview && (
             <section className="card">
               <h2>执行前预览（不写盘）</h2>
-              <PreviewPanel preview={preview} />
-              <DataTable rows={preview.sample} columns={columns} maxRows={20} />
+              <PreviewPanel
+                preview={preview}
+                accepted={accepted}
+                onAccept={(i) => {
+                  const next = new Set(accepted);
+                  next.add(i);
+                  setAccepted(next);
+                }}
+                onReject={(i) => {
+                  const removed = steps[i];
+                  patchSteps(steps.filter((s) => s.id !== removed.id));
+                }}
+              />
+              <DataTable rows={preview.sample} columns={columns} />
             </section>
           )}
 

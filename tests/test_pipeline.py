@@ -109,6 +109,30 @@ class PipelineTests(unittest.TestCase):
         v0 = store.load_version(self.project_dir, 0)
         self.assertEqual(7, len(v0["rows"]))  # originals untouched
 
+    def test_illegal_number_aborts_and_publishes_nothing(self):
+        bad_csv = CSV + "S6,oops,F,100.1\n"
+        store.ingest_csv(self.tmp.name, "illegal", bad_csv)
+        pdir = os.path.join(self.tmp.name, "illegal")
+        unit_step = SPEC["steps"][0]
+        with self.assertRaises(ValueError) as ctx:
+            pipeline.apply_spec(pdir, {"steps": [unit_step]})
+        self.assertIn("non-numeric", str(ctx.exception))
+        self.assertEqual(0, store.load_manifest(pdir)["latest_version"])
+
+    def test_lineage_carries_applied_actions(self):
+        pipeline.apply_spec(self.project_dir, SPEC)
+        version = store.load_version(self.project_dir, 1)
+        rows = {r["sample_id"]: r for r in version["rows"]}
+        s2 = rows["S2"]
+        descriptions = []
+        for step in version["step_actions"]:
+            for action in step["actions"]:
+                if s2["_id"] in action["origins"]:
+                    descriptions.append(action["description"])
+        joined = " | ".join(descriptions)
+        self.assertIn("单位换算", joined)
+        self.assertIn("重复合并", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

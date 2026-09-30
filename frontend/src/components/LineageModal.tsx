@@ -13,6 +13,7 @@ interface Props {
 export function LineageModal({ project, version, rowId, onClose }: Props) {
   const [origins, setOrigins] = useState<string[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
+  const [timeline, setTimeline] = useState<{ step: string; description: string }[]>([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -21,6 +22,7 @@ export function LineageModal({ project, version, rowId, onClose }: Props) {
       .then((res) => {
         setOrigins(res.origins);
         setRows(res.origin_rows);
+        setTimeline(res.timeline ?? []);
       })
       .catch((e: Error) => setError(e.message));
   }, [project, version, rowId]);
@@ -45,6 +47,21 @@ export function LineageModal({ project, version, rowId, onClose }: Props) {
             </span>
           ))}
         </p>
+        <div className="timeline-box">
+          <span className="small muted">该结果在各步骤中采用的处理：</span>
+          {timeline.length === 0 ? (
+            <p className="muted small">无（原始记录未被任何步骤改动）</p>
+          ) : (
+            <ol className="timeline-list">
+              {timeline.map((item, i) => (
+                <li key={i}>
+                  <span className="badge">{item.step}</span>
+                  <span>{item.description}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
         <div className="table-wrap">
           <table>
             <thead>
