@@ -35,6 +35,33 @@
 - `drop`：排除该行，预览与血缘保留行号和原始值；
 - `replace`：仅在明确给出**有限数值**替代值时使用，永远不会悄悄替换成 0。
 
+同一列、同一类异常可以再按**来源**分别决定：在步骤参数 `policies` 中以列名给出
+规则列表，每条规则可带 `value_matches`（命中的原始文字，如 `ERR`）、
+`source_column` 与 `sources`（来源列名及取值，如 `source=lab-A`），按顺序匹配、
+第一条命中生效，最后可用不带来源/文字的规则兜底。于是同样是 `ERR`，来自 A 实验室的
+一行可以替换为数值、来自 B 实验室的一行被排除、其余留待核对；预览受影响行、统计、
+血缘与最终发布结果由同一份内存计算产生，保证一致。
+
+## 追加实验批次与人工例外
+
+- **追加批次**：`POST /api/projects/{name}/batches/append` 追加列结构一致的新批次。
+  新行写入 `workspace.json` 与 `batches/batch-N.json`，v0 与所有已发布版本文件
+  永不重写；预览/执行时带 `include_appended: true` 即在同一套来源规则下一起清洗，
+  发布时先落一个 `kind: "batch_append"` 的数据快照版本，再产出清洗版本。
+- **规则修改影响分析**：`POST /api/projects/{name}/rule-impact` 传入新旧参数，
+  返回受影响的**旧记录**（`changed_decisions`，含原值与新旧动作）、新规则覆盖的
+  记录（`newly_handled`，新批次以 `is_new_row` 标出），以及与新规则冲突的人工例外
+  （`conflicting_exceptions`）。冲突必须由用户逐条选择「保留人工决定」或
+  「改用新规则（撤回例外）」。
+- **人工例外**：以 `{row_id}|{step}:{column}:{stage}:{issue}` 为键保存在
+  `exceptions.json`，作用于具体一条记录（保留待核对 / 排除 / 明确替代值）。
+  预览面板的每条受影响行都可设置；已保存例外在保存重开后仍生效，撤回后该行
+  立即恢复按规则处理。原值、单位换算结果与排除原因仍逐条记录在 `affected_rows`
+  与血缘 timeline 中，并以 `decision_source: rule|manual` 标明决定来源。
+- **版本对比**：`POST /api/projects/{name}/diff` 区分 `data_added`（数据新增）、
+  `value_changed`（`cause=rule_changed|manual`）、`dropped_rows`（规则排除）、
+  `restored_rows`/`manual_rows`（人工决定保留或恢复）三类影响。
+
 流水线可基于任意历史版本预览并发布：版本号始终追加（如基于 `v0` 比较
 两套策略会得到 `v1`、`v2`），新版本记录 `created_from`，原数据和已有成功
 版本都保持原样。修改任何步骤参数或退回步骤都会立即清空旧预览，重新计算后
@@ -88,6 +115,13 @@ cd frontend && node node_modules/vite/bin/vite.js build
   受影响行明细，不写盘
 - `POST /api/projects/{name}/apply` 全部步骤成功后原子提交新版本，可带
   `source_version` 从任意历史版本分叉，版本仍只追加、不变更旧版本
+- `POST /api/projects/{name}/batches/append` 追加新实验批次（不重写已发布版本）
+- `POST /api/projects/{name}/exceptions/set|revoke` 设置或撤回单条人工例外
+- `POST /api/projects/{name}/rule-impact` 规则改动影响分析（旧记录/新记录/冲突例外）
+- `POST /api/projects/{name}/diff` 比较两个版本，区分数据新增、规则变化、人工决定
+
+预览/执行请求体可带 `include_appended`（包含工作区追加批次）和 `use_exceptions`
+（应用生效中的人工例外，默认 true）。
 
 预览/执行报告中每步都带 `stats.affected_rows`（行级影响：转换前后值、
 填充、删除、被合并的行），版本文件另存 `step_actions`，血缘接口在

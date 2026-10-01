@@ -20,7 +20,8 @@ the allowed range after scaling is caught afterwards. Rows are never
 silently turned into 0; every rejected row records its original value.
 """
 from .numbers import (ISSUE_LABELS, POLICY_LABELS, classify_number,
-                      normalize_policies, optional_bound)
+                      normalize_column_rules, normalize_policies,
+                      optional_bound, resolve_rule)
 
 PRE_ISSUES = ("missing", "illegal", "nonfinite", "out_of_range")
 POST_ISSUES = ("nonfinite", "out_of_range")
@@ -45,6 +46,7 @@ def _rule_factors(rules, canonical_unit):
 
 
 def apply(rows, params):
+    exceptions = params.get("_exceptions")
     column = params["column"]
     unit_column = params.get("unit_column")
     canonical_unit = params["canonical_unit"]
@@ -56,12 +58,34 @@ def apply(rows, params):
     post_max = optional_bound(params, "post_max_value")
     # Missing values are left for a later missing-values step by default;
     # everything else aborts so bad numbers can never reach a result.
-    policies = normalize_policies(params.get("policies"), PRE_ISSUES,
-                                  default_action="error")
+    raw_policies = params.get("policies") or {}
+    column_rules = normalize_column_rules(raw_policies, PRE_ISSUES,
+                                          default_action="error")
+    policies = normalize_policies(
+        {k: v for k, v in raw_policies.items() if k in PRE_ISSUES},
+        PRE_ISSUES, default_action="error")
     policies["missing"] = normalize_policies(
-        params.get("policies"), ("missing",), default_action="flag")["missing"]
+        {k: v for k, v in raw_policies.items() if k in PRE_ISSUES},
+        ("missing",), default_action="flag")["missing"]
+    raw_post = params.get("post_policies") or {}
+    post_column_rules = normalize_column_rules(raw_post, POST_ISSUES,
+                                               default_action="error")
     post_policies = normalize_policies(
-        params.get("post_policies"), POST_ISSUES, default_action="error")
+        {k: v for k, v in raw_post.items() if k in POST_ISSUES},
+        POST_ISSUES, default_action="error")
+
+    def _pick(column_rules_map, legacy_map, issue, row_for_match, raw_val):
+        from ..pipeline import apply_manual_exception
+        stage = "pre" if column_rules_map is column_rules else "post"
+        if column in column_rules_map:
+            policy = resolve_rule(column_rules_map, column, issue,
+                                  row_for_match, raw_val)
+        else:
+            policy = legacy_map[issue]
+        policy, source = apply_manual_exception(
+            policy, row_for_match["_id"], "unit_convert",
+            column, issue, exceptions, stage=stage)
+        return policy, source
 
     converted = 0
     unknown_units = {}
@@ -94,7 +118,8 @@ def apply(rows, params):
         new_row = dict(row)
 
         if category != "ok":
-            policy = policies[category]
+            policy, decision_source = _pick(
+                column_rules, policies, category, row, raw_value)
             note("pre", category, policy["action"])
             detail = {
                 "row_id": row["_id"], "column": column,
@@ -102,6 +127,16 @@ def apply(rows, params):
                 "original_value": raw_value, "unit": unit,
                 "action": policy["action"],
             }
+            if policy.get("label"):
+                detail["rule_label"] = policy["label"]
+            if policy.get("source_column"):
+                detail["source_column"] = policy["source_column"]
+                detail["source_value"] = row.get(policy["source_column"])
+            detail["decision_source"] = (
+                "manual" if decision_source == "manual" else "rule")
+            if decision_source == "manual":
+                detail["manual"] = True
+                detail["manual_reason"] = policy.get("manual_reason")
             if policy["action"] == "error":
                 raise ValueError(
                     f"column '{column}' row {row['_id']}: "
@@ -144,7 +179,9 @@ def apply(rows, params):
             post_category = "out_of_range"
 
         if post_category != "ok":
-            policy = post_policies[post_category]
+            policy, decision_source = _pick(
+                post_column_rules, post_policies,
+                post_category, row, raw_value)
             note("post", post_category, policy["action"])
             detail = {
                 "row_id": row["_id"], "column": column,
@@ -152,6 +189,11 @@ def apply(rows, params):
                 "original_value": raw_value, "converted_value": converted_value,
                 "unit": unit, "action": policy["action"],
             }
+            detail["decision_source"] = (
+                "manual" if decision_source == "manual" else "rule")
+            if decision_source == "manual":
+                detail["manual"] = True
+                detail["manual_reason"] = policy.get("manual_reason")
             if policy["action"] == "error":
                 raise ValueError(
                     f"column '{column}' row {row['_id']}: 换算后"

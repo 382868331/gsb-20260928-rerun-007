@@ -109,6 +109,147 @@ def normalize_policies(raw_policies, issues, default_action="error"):
     return policies
 
 
+VALID_ACTIONS = ("error", "flag", "drop", "replace")
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip() != ""]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def normalize_rule_entry(entry, issue=None, default_action="error"):
+    """Validate one (column, issue, source) rule entry.
+
+    A rule may additionally narrow its scope with:
+
+    * ``value_matches``: str | list[str] - only cells whose raw text
+      equals one of these tokens (e.g. ["ERR", "ERROR"]) trigger it;
+    * ``source_column`` / ``sources``: the rule only applies when the
+      named column carries one of the given values, so two different
+      sources of the same illegal text can be replaced for one source
+      and dropped for the other.
+
+    Returns a normalized dict; raises ValueError on malformed input.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("rule entry must be an object")
+    action = entry.get("action", default_action)
+    if action not in VALID_ACTIONS:
+        known = ", ".join(sorted(VALID_ACTIONS))
+        raise ValueError(
+            f"rule has unknown action '{action}' (known: {known})"
+        )
+    replacement = entry.get("replacement")
+    if action == "replace":
+        parsed = parse_number(replacement)
+        if parsed is None or not math.isfinite(parsed):
+            raise ValueError(
+                f"rule needs a finite numeric replacement "
+                f"(got {replacement!r}); bad values are never replaced by 0"
+            )
+        replacement = parsed
+    rule = {
+        "issue": issue or entry.get("issue"),
+        "action": action,
+        "replacement": replacement,
+        "value_matches": _as_list(entry.get("value_matches")),
+        "source_column": (str(entry["source_column"]).strip()
+                          if entry.get("source_column") not in (None, "")
+                          else None),
+        "sources": _as_list(entry.get("sources")),
+        "label": str(entry.get("label", "") or ""),
+    }
+    if not rule["issue"]:
+        raise ValueError("rule entry needs an issue kind")
+    if rule["sources"] and not rule["source_column"]:
+        raise ValueError(
+            f"rule for '{rule['issue']}' narrows by sources but no "
+            "source_column was given"
+        )
+    return rule
+
+
+def normalize_column_rules(raw, issues, default_action="error"):
+    """Validate the per-column rule matrix.
+
+    Accepted shapes (both may be mixed):
+
+    * legacy ``{issue: {action, replacement}}`` policies;
+    * ``{column: [ {issue, action, replacement?, value_matches?,
+                    source_column?, sources?}, ... ]}`` rule lists.
+
+    Returns ``{column: [normalized_rule, ...]}`` plus a "*" key holding
+    legacy issue defaults. Rules are returned in definition order; the
+    first matching rule wins.
+    """
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ValueError("column rules must be an object")
+    result = {}
+    for key, entry in raw.items():
+        if key in issues and isinstance(entry, dict) and "rules" not in entry:
+            # Legacy issue-level default policy.
+            normalized = normalize_policies({key: entry}, issues,
+                                            default_action)[key]
+            result.setdefault("*", []).append(
+                {"issue": key, "action": normalized["action"],
+                 "replacement": normalized["replacement"],
+                 "value_matches": [], "source_column": None,
+                 "sources": [], "label": ""})
+            continue
+        if isinstance(entry, dict) and "rules" in entry:
+            entry = entry["rules"]
+        if not isinstance(entry, list):
+            raise ValueError(
+                f"rules for column '{key}' must be a list of rule entries"
+            )
+        rules = []
+        for item in entry:
+            rule = normalize_rule_entry(item, default_action=default_action)
+            if rule["issue"] not in issues:
+                known = ", ".join(issues)
+                raise ValueError(
+                    f"rule for column '{key}' has unknown issue "
+                    f"'{rule['issue']}' (known: {known})"
+                )
+            rules.append(rule)
+        result.setdefault(str(key), []).extend(rules)
+    return result
+
+
+def resolve_rule(column_rules, column, issue, row, raw_value):
+    """Pick the first matching rule for a cell, else the issue default.
+
+    Per-column rules take precedence over legacy issue defaults; within
+    one list the first rule whose value/source scope matches wins, so
+    specific rules must be listed before generic ones.
+    """
+    candidates = list(column_rules.get(column, []))
+    candidates.extend(column_rules.get("*", []))
+    fallback = {"action": "error", "replacement": None}
+    generic_default = None
+    for rule in candidates:
+        if rule["issue"] != issue:
+            continue
+        if rule["value_matches"]:
+            if str(raw_value).strip() not in rule["value_matches"]:
+                continue
+        if rule["source_column"]:
+            source_value = str(row.get(rule["source_column"]) or "").strip()
+            if rule["sources"] and source_value not in rule["sources"]:
+                continue
+        if not rule["value_matches"] and not (rule["source_column"]
+                                              and rule["sources"]):
+            generic_default = rule
+            continue
+        return rule
+    return generic_default or fallback
+
+
 def optional_bound(params, key):
     value = params.get(key)
     if value is None or value == "":

@@ -19,12 +19,14 @@ replacement, ``flag`` keeps the original value with a ``_review`` marker
 and ``drop`` records the removed row with its original value for lineage.
 """
 from .numbers import (ISSUE_LABELS, POLICY_LABELS, classify_number,
-                      normalize_policies, optional_bound)
+                      normalize_column_rules, normalize_policies,
+                      optional_bound, resolve_rule)
 
 ISSUES = ("missing", "illegal", "nonfinite", "out_of_range")
 
 
 def apply(rows, params):
+    exceptions = params.get("_exceptions")
     columns = params.get("columns") or sorted(
         {key for row in rows for key in row if not key.startswith("_")}
     )
@@ -33,12 +35,19 @@ def apply(rows, params):
     min_value = optional_bound(params, "min_value")
     max_value = optional_bound(params, "max_value")
     raw_policies = params.get("policies") or {}
-    # Defaults: missing rows are kept for later review; genuinely bad
-    # numbers stop the run instead of silently entering results.
-    policies = normalize_policies(raw_policies, ISSUES,
-                                  default_action="error")
-    policies["missing"] = normalize_policies(
-        raw_policies, ("missing",), default_action="flag")["missing"]
+    # New shape: policies may carry per-column rule lists keyed by
+    # column name; each rule can additionally narrow by raw value token
+    # and by a source column (e.g. instrument/lab), so the same illegal
+    # text from two sources is handled independently.
+    column_rules = normalize_column_rules(raw_policies, ISSUES,
+                                          default_action="error")
+    # Legacy fallback defaults (issue-level policies shared by columns).
+    legacy = normalize_policies(
+        {k: v for k, v in raw_policies.items() if k in ISSUES},
+        ISSUES, default_action="error")
+    legacy["missing"] = normalize_policies(
+        {k: v for k, v in raw_policies.items() if k in ISSUES},
+        ("missing",), default_action="flag")["missing"]
 
     counts = {issue: {} for issue in ISSUES}
     flagged_rows = 0
@@ -58,7 +67,16 @@ def apply(rows, params):
                 raw_value, min_value, max_value)
             if category == "ok":
                 continue
-            policy = policies[category]
+            if col in column_rules or any(
+                    k not in ISSUES for k in raw_policies):
+                policy = resolve_rule(column_rules, col, category,
+                                      row, raw_value)
+            else:
+                policy = legacy[category]
+            from ..pipeline import apply_manual_exception
+            policy, decision_source = apply_manual_exception(
+                policy, row["_id"], "number_check", col, category,
+                exceptions, stage="check")
             action = policy["action"]
             counts[category].setdefault(action, 0)
             counts[category][action] += 1
@@ -67,6 +85,17 @@ def apply(rows, params):
                 "stage": "number_check", "issue": category,
                 "original_value": raw_value, "action": action,
             }
+            if policy.get("label"):
+                detail["rule_label"] = policy["label"]
+            if policy.get("source_column"):
+                detail["source_column"] = policy["source_column"]
+                detail["source_value"] = row.get(policy["source_column"])
+            if decision_source == "manual":
+                detail["manual"] = True
+                detail["decision_source"] = "manual"
+                detail["manual_reason"] = policy.get("manual_reason")
+            else:
+                detail["decision_source"] = "rule"
             if action == "error":
                 raise ValueError(
                     f"column '{col}' row {row['_id']}: "

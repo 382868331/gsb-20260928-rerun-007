@@ -83,3 +83,93 @@ def ingest_csv(projects_root, name, csv_text, label="import"):
     }
     atomic_write_json(os.path.join(project_dir, "manifest.json"), manifest)
     return project_dir
+
+
+def append_batch(projects_root, name, csv_text, batch_label=""):
+    """Append a new experiment batch to an existing project.
+
+    Published versions never change: the raw additions are recorded in
+    an append-only ``batches/batch-N.json`` file and in
+    ``workspace.json``; v0 and every published version file stay exactly
+    as they were.
+    """
+    project_dir = project_path(projects_root, name)
+    if not os.path.exists(project_dir):
+        raise ValueError(f"project '{name}' not found")
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if not reader.fieldnames:
+        raise ValueError("CSV has no header row")
+    new_columns = [c.strip() for c in reader.fieldnames if c is not None]
+
+    v0 = load_version(project_dir, 0)
+    old_columns = []
+    for row in v0["rows"]:
+        for key in row:
+            if not key.startswith("_") and key not in old_columns:
+                old_columns.append(key)
+    unknown = [c for c in new_columns if c not in old_columns]
+    if unknown:
+        raise ValueError("新批次出现原始数据中没有的列：" + ", ".join(unknown))
+
+    workspace_path = os.path.join(project_dir, "workspace.json")
+    if os.path.isfile(workspace_path):
+        with open(workspace_path, encoding="utf-8") as handle:
+            workspace = json.load(handle)
+        base_rows = workspace["rows"]
+        appended = workspace.get("appended", [])
+    else:
+        base_rows = v0["rows"]
+        appended = []
+    existing_ids = {row["_id"] for row in base_rows}
+    next_index = max((int(rid[1:]) for rid in existing_ids
+                      if rid.startswith("r") and rid[1:].isdigit()),
+                     default=0)
+    new_rows = []
+    for record in reader:
+        next_index += 1
+        row = {"_id": f"r{next_index:04d}"}
+        for key in old_columns:
+            value = record.get(key, "")
+            row[key] = "" if value is None else value
+        new_rows.append(row)
+    if not new_rows:
+        raise ValueError("CSV contains no data rows")
+
+    batches_dir = os.path.join(project_dir, "batches")
+    os.makedirs(batches_dir, exist_ok=True)
+    batch_no = len(appended_batch_files(project_dir)) + 1
+    atomic_write_json(os.path.join(batches_dir, f"batch-{batch_no}.json"), {
+        "batch": batch_no, "label": batch_label or f"追加批次 {batch_no}",
+        "rows": new_rows,
+    })
+    all_rows = list(base_rows) + new_rows
+    atomic_write_json(workspace_path, {
+        "rows": all_rows,
+        "lineage": {r["_id"]: [r["_id"]] for r in all_rows},
+        "appended": appended + [
+            {"_id": r["_id"], "batch": batch_no,
+             "label": batch_label or f"追加批次 {batch_no}"}
+            for r in new_rows],
+    })
+    return {"project_dir": project_dir, "new_rows": new_rows,
+            "new_ids": [r["_id"] for r in new_rows],
+            "batch": batch_no}
+
+
+def appended_batch_files(project_dir):
+    batches_dir = os.path.join(project_dir, "batches")
+    if not os.path.isdir(batches_dir):
+        return []
+    return sorted(f for f in os.listdir(batches_dir)
+                  if f.startswith("batch-") and f.endswith(".json"))
+
+
+def working_rows(project_dir):
+    """Return the current working rows: v0 plus every appended batch."""
+    workspace_path = os.path.join(project_dir, "workspace.json")
+    if os.path.isfile(workspace_path):
+        with open(workspace_path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data["rows"], data["lineage"], data.get("appended", [])
+    v0 = load_version(project_dir, 0)
+    return v0["rows"], v0["lineage"], []

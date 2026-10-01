@@ -333,3 +333,12 @@ th { background: #f8fafc; font-weight: 600; }
 }
 .timeline-list { margin: 6px 0 0; padding-left: 18px; }
 .timeline-list li { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; font-size: 13px; }
+
+.source-rules-details { margin-top: 8px; }
+.source-rule-col { border: 1px solid #e3e3e8; border-radius: 8px; padding: 8px; margin: 8px 0; }
+.source-rule-head { display: flex; align-items: center; gap: 8px; }
+.source-rule-row { display: grid; grid-template-columns: 90px 1fr 120px 1fr 90px 110px 30px; gap: 6px; margin-top: 6px; align-items: center; }
+.source-rule-row input, .source-rule-row select { width: 100%; }
+.manual-decide { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
+.revoked-row { opacity: 0.55; }
+.diff-list { margin: 8px 0 0 18px; font-size: 13px; }

@@ -55,3 +55,42 @@ export interface Manifest {
   latest_version: number;
   versions: VersionMeta[];
 }
+
+export interface SourceRule {
+  issue: string;
+  action: "error" | "flag" | "drop" | "replace";
+  replacement?: number | null;
+  value_matches?: string[];
+  source_column?: string | null;
+  sources?: string[];
+  label?: string;
+}
+
+export interface ManualException {
+  row_id: string;
+  scope: string;
+  action: "flag" | "drop" | "replace";
+  replacement?: number | null;
+  reason?: string;
+  active?: boolean;
+  revoked?: boolean;
+}
+
+export interface RuleImpact {
+  changed_decisions: {
+    row_id: string; column: string; issue: string; issue_label: string;
+    original_value: unknown; old_action: string; new_action: string;
+    old_replacement?: number | null; new_replacement?: number | null;
+    is_new_row?: boolean;
+  }[];
+  newly_handled: {
+    row_id: string; column: string; issue: string; issue_label: string;
+    original_value: unknown; action: string; replacement?: number | null;
+    rule_label?: string | null; source_column?: string | null;
+    source_value?: unknown; is_new_row?: boolean;
+  }[];
+  conflicting_exceptions: {
+    row_id: string; column: string; issue: string;
+    manual_action: string; rule_action: string; reason: string;
+  }[];
+}

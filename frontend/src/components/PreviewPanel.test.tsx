@@ -44,6 +44,7 @@ describe("PreviewPanel", () => {
     const onReject = vi.fn();
     render(
       <PreviewPanel
+        project="lab"
         preview={preview}
         accepted={new Set<number>()}
         onAccept={onAccept}
@@ -61,6 +62,7 @@ describe("PreviewPanel", () => {
   it("marks accepted steps and hides their decision buttons", () => {
     const { container } = render(
       <PreviewPanel
+        project="lab"
         preview={preview}
         accepted={new Set([0])}
         onAccept={() => {}}

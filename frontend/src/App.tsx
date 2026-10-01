@@ -13,6 +13,9 @@ import { PreviewPanel } from "./components/PreviewPanel";
 import { DataTable } from "./components/DataTable";
 import { VersionHistory } from "./components/VersionHistory";
 import { LineageModal } from "./components/LineageModal";
+import { BatchPanel } from "./components/BatchPanel";
+import { ExceptionsPanel } from "./components/ExceptionsPanel";
+import type { ManualException } from "./types";
 
 let stepSeq = 0;
 const newStep = (type: StepType): PipelineStep => ({
@@ -40,6 +43,9 @@ export default function App() {
   const [traceRow, setTraceRow] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [exceptions, setExceptions] = useState<Record<string, ManualException>>({});
+  const [appended, setAppended] = useState<{ _id: string; batch: number; label?: string }[]>([]);
+  const [includeAppended, setIncludeAppended] = useState(true);
 
   const [newName, setNewName] = useState("");
   const [csvText, setCsvText] = useState("");
@@ -53,10 +59,20 @@ export default function App() {
     api.getProject(project).then((info) => {
       setManifest(info.manifest);
       setColumns(info.columns);
+      setExceptions(info.exceptions ?? {});
+      setAppended(info.appended ?? []);
       openVersion(info.manifest.latest_version);
       setSourceVersion(info.manifest.latest_version);
     });
   }, [project]);
+
+  function refreshProject() {
+    api.getProject(project).then((info) => {
+      setManifest(info.manifest);
+      setExceptions(info.exceptions ?? {});
+      setAppended(info.appended ?? []);
+    });
+  }
 
   function openVersion(version: number) {
     setViewVersion(version);
@@ -95,7 +111,8 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      setPreview(await api.preview(project, steps, sourceVersion));
+      setPreview(await api.preview(project, steps, sourceVersion,
+        { includeAppended, useExceptions: true }));
       setAccepted(new Set());
     } catch (e) {
       setError(`预览失败，未改动任何数据：${(e as Error).message}`);
@@ -109,9 +126,12 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
-      const res = await api.apply(project, label, steps, sourceVersion);
+      const res = await api.apply(project, label, steps, sourceVersion,
+        { includeAppended, useExceptions: true });
       const info = await api.getProject(project);
       setManifest(info.manifest);
+      setExceptions(info.exceptions ?? {});
+      setAppended(info.appended ?? []);
       setSteps([]);
       setLabel("");
       invalidatePreview();
@@ -201,12 +221,33 @@ export default function App() {
                 ))}
               </select>
             </label>
+            {appended.length > 0 && (
+              <label className="small">
+                <input
+                  type="checkbox"
+                  checked={includeAppended}
+                  onChange={(e) => {
+                    setIncludeAppended(e.target.checked);
+                    invalidatePreview();
+                  }}
+                />
+                包含 {appended.length} 条追加批次记录一起预览/发布（不重写已发布版本）
+              </label>
+            )}
             {steps.map((step, i) => (
               <StepEditor
                 key={step.id}
                 step={step}
                 index={i}
                 columns={columns}
+                project={project}
+                onResolveConflict={async (rowId, scope, keepManual) => {
+                  if (!keepManual) {
+                    await api.revokeException(project, rowId, scope);
+                  }
+                  refreshProject();
+                  invalidatePreview();
+                }}
                 onChange={(s) =>
                   patchSteps(steps.map((x) => (x.id === s.id ? s : x)))}
                 onRemove={() => patchSteps(steps.filter((x) => x.id !== step.id))}
@@ -257,6 +298,7 @@ export default function App() {
             <section className="card">
               <h2>执行前预览（不写盘）</h2>
               <PreviewPanel
+                project={project}
                 preview={preview}
                 accepted={accepted}
                 onAccept={(i) => {
@@ -268,6 +310,7 @@ export default function App() {
                   const removed = steps[i];
                   patchSteps(steps.filter((s) => s.id !== removed.id));
                 }}
+                onExceptionChanged={refreshProject}
               />
               <DataTable rows={preview.sample} columns={columns} />
             </section>
@@ -282,6 +325,19 @@ export default function App() {
               onTrace={viewVersion === 0 ? undefined : setTraceRow}
             />
           </section>
+          <BatchPanel
+            project={project}
+            appended={appended}
+            onAppended={() => refreshProject()}
+          />
+          {manifest && (
+            <ExceptionsPanel
+              project={project}
+              exceptions={exceptions}
+              manifest={manifest}
+              onChange={refreshProject}
+            />
+          )}
         </main>
       </div>
       {traceRow && (

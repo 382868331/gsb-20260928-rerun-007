@@ -1,14 +1,20 @@
-import { Check, Undo2 } from "lucide-react";
+import { Check, Undo2, UserCog } from "lucide-react";
+import { useState } from "react";
+import { api } from "../api";
 import type { PreviewResult, StepReport } from "../types";
 
 interface Props {
+  project: string;
   preview: PreviewResult;
   accepted: Set<number>;
   onAccept: (index: number) => void;
   onReject: (index: number) => void;
+  onExceptionChanged?: () => void;
 }
 
-export function PreviewPanel({ preview, accepted, onAccept, onReject }: Props) {
+export function PreviewPanel(
+  { project, preview, accepted, onAccept, onReject, onExceptionChanged }: Props,
+) {
   const delta = preview.row_count_after - preview.row_count_before;
   return (
     <div className="preview-panel">
@@ -59,7 +65,11 @@ export function PreviewPanel({ preview, accepted, onAccept, onReject }: Props) {
                 </li>
               ))}
             </ul>
-            <AffectedRows report={r} />
+              <AffectedRows
+                project={project}
+                report={r}
+                onExceptionChanged={onExceptionChanged}
+              />
           </li>
           );
         })}
@@ -68,21 +78,84 @@ export function PreviewPanel({ preview, accepted, onAccept, onReject }: Props) {
   );
 }
 
-function AffectedRows({ report }: { report: StepReport }) {
+function AffectedRows({ project, report, onExceptionChanged }: {
+  project: string; report: StepReport;
+  onExceptionChanged?: () => void;
+}) {
   const rows = (report.stats.affected_rows as unknown[]) ?? [];
   if (!rows.length) return <p className="muted small">本步骤不改变任何行。</p>;
   return (
     <div className="affected-box">
       <span className="small muted">受影响的 {rows.length} 行预览（执行前不写盘）：</span>
       <ul className="affected-list">
-        {(report.actions ?? []).map((action, i) => (
-          <li key={i} className="affected-item">
-            <code>{action.origins.join(", ")}</code>
-            <span>{action.description}</span>
-          </li>
-        ))}
+        {(report.actions ?? []).map((action, i) => {
+          const detail = action.detail as Record<string, unknown>;
+          const scope = scopeForDetail(report.type, detail);
+          return (
+            <li key={i} className="affected-item">
+              <code>{action.origins.join(", ")}</code>
+              <span>{String(action.description)}</span>
+              {detail.decision_source === "manual" && (
+                <span className="badge warn">人工决定</span>
+              )}
+              {scope && detail.issue ? (
+                <ManualButtons
+                  project={project}
+                  rowId={String(detail.row_id ?? action.origins[0] ?? "")}
+                  scope={scope}
+                  onChanged={onExceptionChanged}
+                />
+              ) : null}
+            </li>
+          );
+        })}
       </ul>
     </div>
+  );
+}
+
+function scopeForDetail(stepType: string, detail: Record<string, unknown>): string {
+  const column = String(detail.column ?? "");
+  const issue = String(detail.issue ?? "");
+  if (!column || !issue) return "";
+  if (stepType === "unit_convert") {
+    const stage = detail.stage === "post_convert" ? "post" : "pre";
+    return `unit_convert:${column}:${stage}:${issue}`;
+  }
+  return `number_check:${column}:check:${issue}`;
+}
+
+function ManualButtons({ project, rowId, scope, onChanged }: {
+  project: string; rowId: string; scope: string;
+  onChanged?: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState("");
+  async function decide(action: "flag" | "drop") {
+    setBusy(true);
+    setSaved("");
+    try {
+      await api.setException(project, {
+        row_id: rowId, scope, action,
+        reason: action === "flag" ? "人工保留待核对" : "人工排除",
+      });
+      setSaved(action === "flag" ? "已设为待核对" : "已设为排除");
+      onChanged?.();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <span className="manual-decide">
+      <UserCog size={13} />
+      <button className="btn small" disabled={busy} onClick={() => decide("flag")}>
+        人工：保留核对
+      </button>
+      <button className="btn small" disabled={busy} onClick={() => decide("drop")}>
+        人工：排除
+      </button>
+      {saved && <span className="muted small">{saved}（重新预览后生效）</span>}
+    </span>
   );
 }
 

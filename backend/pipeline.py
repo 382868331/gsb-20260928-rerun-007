@@ -126,7 +126,7 @@ def _action_records(step_type, stats, lineage):
     return records
 
 
-def run(rows, spec, base_lineage=None):
+def run(rows, spec, base_lineage=None, exceptions=None):
     """Run a spec over rows purely, without persisting anything.
 
     Returns (final_rows, global_lineage, step_reports).
@@ -140,9 +140,14 @@ def run(rows, spec, base_lineage=None):
 
     for step in spec["steps"]:
         step_type = step["type"]
-        next_rows, local_lineage, stats = STEPS[step_type](
-            current, step.get("params", {})
-        )
+        params = dict(step.get("params", {}))
+        if exceptions:
+            # Steps only receive exceptions aimed at their own scope.
+            params["_exceptions"] = {
+                key: item for key, item in exceptions.items()
+                if key.split("|", 1)[1].startswith(step_type + ":")
+            } or None
+        next_rows, local_lineage, stats = STEPS[step_type](current, params)
         global_lineage = _compose(global_lineage, local_lineage)
         actions = _action_records(step_type, stats, global_lineage)
         reports.append({
@@ -157,6 +162,33 @@ def run(rows, spec, base_lineage=None):
         current = next_rows
 
     return current, global_lineage, reports
+
+
+def scope_for(step_type, column, issue, stage=None):
+    return (f"{step_type}:{column}:{stage}:{issue}" if stage
+            else f"{step_type}:{column}:{issue}")
+
+
+def apply_manual_exception(policy, row_id, step_type, column, issue,
+                           exceptions, stage=None):
+    """Override a resolved policy with a per-row manual decision.
+
+    Returns (policy, source) where source is "rule" or "manual";
+    the returned policy always carries the manual marker for reports.
+    """
+    if not exceptions:
+        return policy, "rule"
+    from .exceptions import key_for
+    key = key_for(row_id, scope_for(step_type, column, issue, stage))
+    manual = exceptions.get(key)
+    if not manual or not manual.get("active", True):
+        return policy, "rule"
+    overridden = dict(policy)
+    overridden["action"] = manual["action"]
+    overridden["replacement"] = manual.get("replacement")
+    overridden["manual"] = True
+    overridden["manual_reason"] = manual.get("reason", "人工例外")
+    return overridden, "manual"
 
 
 def atomic_write_json(path, payload):
@@ -177,7 +209,8 @@ def atomic_write_json(path, payload):
         raise
 
 
-def apply_spec(project_dir, spec, label="", source_version=None):
+def apply_spec(project_dir, spec, label="", source_version=None,
+               exceptions=None):
     """Execute spec against the project's latest version and commit a new one.
 
     The new version is fully built in memory first; only when all steps
@@ -195,7 +228,8 @@ def apply_spec(project_dir, spec, label="", source_version=None):
         source = json.load(handle)
 
     final_rows, lineage, reports = run(
-        source["rows"], spec, base_lineage=source.get("lineage"))
+        source["rows"], spec, base_lineage=source.get("lineage"),
+        exceptions=exceptions)
 
     new_no = latest_no + 1
     version_payload = {

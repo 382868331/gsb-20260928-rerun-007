@@ -8,7 +8,7 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import pipeline, store
+from . import analysis, exceptions as exc_store, pipeline, store
 
 
 PROJECTS_ROOT = os.environ.get(
@@ -54,6 +54,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def _snapshot_workspace(self, project_dir, manifest, rows, lineage):
+        """Commit appended batches as a regular append version (no rules).
+
+        The version records data addition only: no cleaning steps run,
+        and previously published versions stay byte-for-byte intact.
+        """
+        new_no = manifest["latest_version"] + 1
+        payload = {
+            "version": new_no,
+            "created_from": 0,
+            "rows": rows, "lineage": lineage,
+            "step_reports": [], "step_actions": [],
+            "kind": "batch_append",
+        }
+        pipeline.atomic_write_json(
+            os.path.join(project_dir, "versions", f"v{new_no}.json"),
+            payload)
+        manifest["versions"].append({
+            "version": new_no, "created_from": 0,
+            "label": "追加实验批次", "steps": [], "reports": [],
+            "kind": "batch_append",
+        })
+        manifest["latest_version"] = new_no
+        pipeline.atomic_write_json(
+            os.path.join(project_dir, "manifest.json"), manifest)
+        return new_no
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -110,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
                         "manifest": manifest,
                         "columns": _columns(latest["rows"]),
                         "row_count": len(latest["rows"]),
+                        "exceptions": exc_store.load_exceptions(project_dir),
+                        "appended": store.working_rows(project_dir)[2],
                     })
                 if parts[3] == "versions" and len(parts) >= 5:
                     version_no = int(parts[4])
@@ -156,30 +185,95 @@ class Handler(BaseHTTPRequestHandler):
                 store.ingest_csv(PROJECTS_ROOT, name, csv_text,
                                  label=body.get("label", "import"))
                 return self._send(201, {"ok": True, "name": name})
-            if parts[:2] == ["api", "projects"] and len(parts) == 4:
+            if parts[:2] == ["api", "projects"] and len(parts) >= 4:
                 name = parts[2]
                 project_dir = store.project_path(PROJECTS_ROOT, name)
                 manifest = store.load_manifest(project_dir)
+                work_rows, work_lineage, appended = store.working_rows(project_dir)
+                if len(parts) == 5 and parts[3] == "batches":
+                    result = store.append_batch(
+                        PROJECTS_ROOT, name, body.get("csv", ""),
+                        batch_label=body.get("label", ""))
+                    return self._send(201, {
+                        "ok": True, "batch": result["batch"],
+                        "new_ids": result["new_ids"],
+                        "new_rows": result["new_rows"],
+                    })
+                if len(parts) == 5 and parts[3] == "exceptions":
+                    row_id = body["row_id"]
+                    scope = body["scope"]
+                    if parts[4] == "revoke":
+                        exc_store.revoke_exception(project_dir, row_id, scope)
+                    else:
+                        exc_store.set_exception(
+                            project_dir, row_id, scope, body["action"],
+                            replacement=body.get("replacement"),
+                            reason=body.get("reason", ""))
+                    return self._send(200, {
+                        "ok": True,
+                        "exceptions": exc_store.load_exceptions(project_dir),
+                    })
+                if len(parts) == 4 and parts[3] == "rule-impact":
+                    work_rows_all, _, appended_all = store.working_rows(project_dir)
+                    appended_ids = {a["_id"] for a in appended_all}
+                    step_type = body.get("step_type", "number_check")
+                    impact = analysis.rule_impact(
+                        body.get("old_params", {}), body.get("new_params", {}),
+                        work_rows_all, step_type=step_type,
+                        columns=body.get("columns"),
+                        exceptions=exc_store.load_exceptions(project_dir))
+                    for item in impact["changed_decisions"]:
+                        item["is_new_row"] = item["row_id"] in appended_ids
+                    for item in impact["newly_handled"]:
+                        item["is_new_row"] = item["row_id"] in appended_ids
+                    return self._send(200, impact)
+                if len(parts) == 4 and parts[3] == "diff":
+                    version_a = store.load_version(project_dir,
+                                                  int(body["version_a"]))
+                    version_b = store.load_version(project_dir,
+                                                  int(body["version_b"]))
+                    return self._send(200, analysis.version_diff(
+                        version_a, version_b))
                 latest = store.load_version(project_dir, manifest["latest_version"])
-                if parts[3] == "preview":
+                if len(parts) == 4 and parts[3] == "preview":
                     spec = {"steps": body.get("steps", [])}
                     source_no = body.get("source_version", manifest["latest_version"])
-                    source = (latest if source_no == manifest["latest_version"]
-                              else store.load_version(project_dir, int(source_no)))
-                    rows, lineage, reports = pipeline.run(source["rows"], spec)
+                    use_workspace = bool(body.get("include_appended", False))
+                    if source_no == 0 and use_workspace:
+                        source = {"rows": work_rows, "lineage": work_lineage}
+                    else:
+                        source = (latest if source_no == manifest["latest_version"]
+                                  else store.load_version(project_dir, int(source_no)))
+                    exceptions = (exc_store.active_map(
+                        exc_store.load_exceptions(project_dir))
+                        if body.get("use_exceptions", True) else None)
+                    rows, lineage, reports = pipeline.run(
+                        source["rows"], spec,
+                        base_lineage=source.get("lineage"),
+                        exceptions=exceptions)
                     return self._send(200, {
                         "reports": reports,
-                        "row_count_before": len(latest["rows"]),
+                        "row_count_before": len(source["rows"]),
                         "row_count_after": len(rows),
                         "sample": rows,
                     })
-                if parts[3] == "apply":
+                if len(parts) == 4 and parts[3] == "apply":
                     spec = {"steps": body.get("steps", [])}
                     source_version = body.get("source_version")
+                    if (int(source_version or manifest["latest_version"]) == 0
+                            and body.get("include_appended", False)):
+                        # Apply over the extended working set without
+                        # rewriting v0: write a transient source snapshot.
+                        source_version = self._snapshot_workspace(
+                            project_dir, manifest, work_rows, work_lineage)
+                    exceptions = (exc_store.active_map(
+                        exc_store.load_exceptions(project_dir))
+                        if body.get("use_exceptions", True) else None)
                     new_no, reports = pipeline.apply_spec(
                         project_dir, spec, label=body.get("label", ""),
                         source_version=(int(source_version)
-                                       if source_version is not None else None))
+                                       if source_version is not None else None),
+                        exceptions=exceptions)
                     return self._send(201, {
                         "version": new_no,
                         "reports": reports,

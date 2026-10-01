@@ -1,5 +1,7 @@
 import { Trash2, GripVertical } from "lucide-react";
 import type { PipelineStep, StepType } from "../types";
+import type { SourceRule } from "../types";
+import { RuleImpactPanel } from "./RuleImpactPanel";
 
 const STEP_TYPES: { value: StepType; label: string; hint: string }[] = [
   { value: "missing_values", label: "缺失值处理", hint: "删除或填充缺失单元格" },
@@ -92,6 +94,159 @@ interface Props {
   columns: string[];
   onChange: (step: PipelineStep) => void;
   onRemove: () => void;
+  project?: string;
+  hasOldRules?: boolean;
+  onResolveConflict?: (rowId: string, scope: string, keepManual: boolean) => void;
+}
+
+const ISSUE_OPTIONS = ISSUES.map(({ key, label }) => ({ value: key, label }));
+
+function tokenList(value: string[] | undefined): string {
+  return (value ?? []).join(", ");
+}
+
+function parseTokenList(text: string): string[] {
+  return text.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function splitPolicies(policies: Record<string, unknown> | undefined,
+                        issueKeys: readonly string[]) {
+  const legacy: Record<string, unknown> = {};
+  const matrix: Record<string, SourceRule[]> = {};
+  for (const [key, value] of Object.entries(policies ?? {})) {
+    if (issueKeys.includes(key)) legacy[key] = value;
+    else if (Array.isArray(value)) matrix[key] = value as SourceRule[];
+  }
+  return { legacy, matrix };
+}
+
+function mergePolicies(legacy: Record<string, unknown>,
+                       matrix: Record<string, SourceRule[]>): Record<string, unknown> {
+  return { ...legacy, ...matrix };
+}
+
+function SourceRuleMatrix({
+  columns,
+  value,
+  onChange,
+}: {
+  columns: string[];
+  value: Record<string, SourceRule[]> | undefined;
+  onChange: (next: Record<string, SourceRule[]>) => void;
+}) {
+  const matrix = value ?? {};
+  const updateColumn = (col: string, rules: SourceRule[]) =>
+    onChange({ ...matrix, [col]: rules });
+  return (
+    <div className="source-rules">
+      <p className="small muted">
+        同一列同类异常可按「来源列的值」和「原始文字」分别决定；排在前面的规则优先匹配，
+        最后可用一条不填来源/文字的通用规则兜底。
+      </p>
+      {columns.map((col) => {
+        const rules = matrix[col] ?? [];
+        return (
+          <div key={col} className="source-rule-col">
+            <div className="source-rule-head">
+              <code>{col}</code>
+              <button
+                type="button"
+                className="btn small"
+                onClick={() =>
+                  updateColumn(col, [...rules, { issue: "illegal", action: "flag" }])}
+              >
+                + 添加来源规则
+              </button>
+            </div>
+            {rules.map((rule, i) => (
+              <div key={i} className="source-rule-row">
+                <select
+                  value={rule.issue}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = { ...rule, issue: e.target.value };
+                    updateColumn(col, next);
+                  }}
+                >
+                  {ISSUE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <input
+                  placeholder="原始文字（如 ERR，逗号分隔，可空=全部）"
+                  value={tokenList(rule.value_matches)}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = { ...rule, value_matches: parseTokenList(e.target.value) };
+                    updateColumn(col, next);
+                  }}
+                />
+                <input
+                  placeholder="来源列名（如 source / batch）"
+                  value={rule.source_column ?? ""}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = {
+                      ...rule,
+                      source_column: e.target.value || null,
+                      ...(e.target.value === "" ? { sources: [] } : {}),
+                    };
+                    updateColumn(col, next);
+                  }}
+                />
+                <input
+                  placeholder="来源值（如 lab-A，逗号分隔，可空=不限）"
+                  value={tokenList(rule.sources)}
+                  disabled={!rule.source_column}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = { ...rule, sources: parseTokenList(e.target.value) };
+                    updateColumn(col, next);
+                  }}
+                />
+                <select
+                  value={rule.action}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = { ...rule, action: e.target.value as SourceRule["action"] };
+                    updateColumn(col, next);
+                  }}
+                >
+                  <option value="error">中止</option>
+                  <option value="flag">待核对</option>
+                  <option value="drop">排除该行</option>
+                  <option value="replace">替代值</option>
+                </select>
+                <input
+                  type="number"
+                  step="any"
+                  disabled={rule.action !== "replace"}
+                  placeholder="有限替代值"
+                  value={rule.replacement ?? ""}
+                  onChange={(e) => {
+                    const next = [...rules];
+                    next[i] = {
+                      ...rule,
+                      replacement: e.target.value === "" ? null : Number(e.target.value),
+                    };
+                    updateColumn(col, next);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  title="删除该规则"
+                  onClick={() => updateColumn(col, rules.filter((_, j) => j !== i))}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function CheckboxList({
@@ -119,7 +274,10 @@ function CheckboxList({
   );
 }
 
-export function StepEditor({ step, index, columns, onChange, onRemove }: Props) {
+export function StepEditor(
+  { step, index, columns, onChange, onRemove, project, hasOldRules,
+    onResolveConflict }: Props,
+) {
   const p = step.params;
   const update = (patch: Record<string, unknown>) =>
     onChange({ ...step, params: { ...p, ...patch } });
@@ -190,6 +348,18 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
 
       {step.type === "number_check" && (
         <div className="step-body">
+          {project && (
+            <RuleImpactPanel
+              project={project}
+              hasOldRules={!!hasOldRules}
+              columns={(p.columns as string[])?.length
+                ? (p.columns as string[]) : columns}
+              buildOldParams={() => ({})}
+              buildNewParams={() => ({ policies: p.policies ?? {} })}
+              onResolveConflict={(rowId, scope, keep) =>
+                onResolveConflict?.(rowId, scope, keep)}
+            />
+          )}
           <div>
             <span className="small muted">检查列（不选 = 全部列）</span>
             <ColumnPicker
@@ -220,9 +390,48 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
             <PolicyTable
               issues={ISSUES}
               value={p.policies as Record<string, { action?: string; replacement?: number }>}
-              onChange={(policies) => update({ policies })}
+              onChange={(legacy) => {
+                const split = splitPolicies(
+                  p.policies as Record<string, unknown>,
+                  ISSUES.map((i) => i.key));
+                update({ policies: mergePolicies(legacy, split.matrix) });
+              }}
               defaults={{ missing: "flag" }}
             />
+            <details className="source-rules-details">
+              <summary>换算前：按列 × 来源分别决定</summary>
+              {(() => {
+                const split = splitPolicies(
+                  p.policies as Record<string, unknown>,
+                  ISSUES.map((i) => i.key));
+                return (
+                  <SourceRuleMatrix
+                    columns={p.column ? [p.column as string] : columns}
+                    value={split.matrix}
+                    onChange={(matrix) =>
+                      update({ policies: mergePolicies(split.legacy, matrix) })}
+                  />
+                );
+              })()}
+            </details>
+            <details className="source-rules-details">
+              <summary>按列 × 来源分别决定（同一异常可替换 / 排除 / 待核对）</summary>
+              {(() => {
+                const issueKeys = ISSUES.map((i) => i.key);
+                const split = splitPolicies(
+                  p.policies as Record<string, unknown>, issueKeys);
+                return (
+                  <SourceRuleMatrix
+                    columns={(p.columns as string[])?.length
+                      ? (p.columns as string[])
+                      : columns}
+                    value={split.matrix}
+                    onChange={(matrix) =>
+                      update({ policies: mergePolicies(split.legacy, matrix) })}
+                  />
+                );
+              })()}
+            </details>
           </div>
         </div>
       )}
@@ -285,8 +494,29 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
             <PolicyTable
               issues={ISSUES.filter((i) => i.key === "nonfinite" || i.key === "out_of_range")}
               value={p.post_policies as Record<string, { action?: string; replacement?: number }>}
-              onChange={(post_policies) => update({ post_policies })}
+              onChange={(legacy) => {
+                const postKeys = ["nonfinite", "out_of_range"];
+                const split = splitPolicies(
+                  p.post_policies as Record<string, unknown>, postKeys);
+                update({ post_policies: mergePolicies(legacy, split.matrix) });
+              }}
             />
+            <details className="source-rules-details">
+              <summary>换算后：按列 × 来源分别决定</summary>
+              {(() => {
+                const postKeys = ["nonfinite", "out_of_range"];
+                const split = splitPolicies(
+                  p.post_policies as Record<string, unknown>, postKeys);
+                return (
+                  <SourceRuleMatrix
+                    columns={p.column ? [p.column as string] : columns}
+                    value={split.matrix}
+                    onChange={(matrix) =>
+                      update({ post_policies: mergePolicies(split.legacy, matrix) })}
+                  />
+                );
+              })()}
+            </details>
             <label>
               结果允许下限（可空）
               <input type="number" step="any" value={String(p.post_min_value ?? "")}
