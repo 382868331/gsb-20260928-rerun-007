@@ -40,6 +40,33 @@ export interface PreviewResult {
   row_count_before: number;
   row_count_after: number;
   sample: Row[];
+  unmapped_rows?: Row[];
+  adopted_scope?: {
+    workspace_appended_included: boolean;
+    confirmed_mapping_ids: string[];
+    published_row_ids: string[];
+    note: string;
+  };
+}
+
+export interface MeasurementMapping {
+  id: string;
+  batch?: number;
+  target_column: string;
+  status: string;
+  confirmed?: boolean;
+  rule_inheritance?: string;
+  candidate_columns?: string[];
+  value_columns?: string[];
+  unit_candidates?: string[];
+  unit_column?: string | null;
+  unit_mode?: string;
+  sample_units?: string[];
+  default_unit?: string | null;
+  source_column?: string | null;
+  sources?: string[];
+  reason?: string;
+  value_column?: string;
 }
 
 export interface VersionMeta {

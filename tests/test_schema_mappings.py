@@ -1,0 +1,208 @@
+"""Schema-evolution measurement mapping and rule-inheritance tests."""
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from backend import mappings, server, store
+from tests.test_followup_api import call
+
+
+OLD_CSV = (
+    "sample_id,temperature,temp_unit,source\n"
+    "A1,77,F,lab-A\n"
+    "B1,25,C,lab-B\n"
+    "C1,ERR,C,lab-A\n"
+)
+
+STEPS = [{
+    "type": "unit_convert",
+    "params": {
+        "column": "temperature",
+        "unit_column": "temp_unit",
+        "canonical_unit": "C",
+        "rules": {"C": 1, "F": {"factor": 0.5555556,
+                                    "offset": -17.777778}},
+        "policies": {"temperature": [
+            {"issue": "illegal", "action": "flag",
+             "value_matches": ["ERR"], "source_column": "source",
+             "sources": ["lab-A"]},
+        ]},
+    },
+}]
+
+
+class SchemaMappingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        server.PROJECTS_ROOT = self.tmp.name
+        call("POST", "/api/projects", {"name": "p", "csv": OLD_CSV})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_split_value_unit_requires_confirmation_and_preserves_text(self):
+        status, res = call("POST", "/api/projects/p/batches/append", {
+            "label": "new",
+            "csv": "sample_id,temperature_value,temp_unit,source\n"
+                   "D1,86,F,lab-A\n",
+        })
+        self.assertEqual(201, status)
+        status, analysis_result = call("POST", "/api/projects/p/batch-mappings/1",
+                                       {"steps": STEPS})
+        self.assertEqual(200, status)
+        proposal = analysis_result["mappings"][0]
+        self.assertEqual("needs_mapping", proposal["rule_inheritance"])
+        self.assertEqual(["temperature_value"], proposal["candidate_columns"])
+        self.assertEqual("per_row", proposal["unit_mode"])
+
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0,
+            "include_appended": True,
+        })
+        self.assertEqual(200, status)
+        self.assertEqual(["r0004"], [r["_id"] for r in preview["unmapped_rows"]])
+        self.assertNotIn("r0004", {r["_id"] for r in preview["sample"]})
+
+        status, _ = call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temp_unit",
+        })
+        self.assertEqual(201 if False else 200, status)
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0,
+            "include_appended": True,
+        })
+        new_row = next(r for r in preview["sample"] if r["_id"] == "r0004")
+        self.assertAlmostEqual(30.0, new_row["temperature"], delta=0.01)
+        self.assertEqual("86", new_row["_raw_temperature"])
+        self.assertEqual("F", new_row["_raw_temperature_unit"])
+        self.assertEqual(["b1:temperature"],
+                         preview["adopted_scope"]["confirmed_mapping_ids"])
+        mapping_report = preview["reports"][0]
+        self.assertEqual("结构测量对应", mapping_report["label"])
+
+    def test_ambiguous_mapping_is_not_auto_selected(self):
+        old_cols = ["temperature"]
+        new_cols = ["temperature_core", "temperature_surface"]
+        rows = [{"_id": "r0009", "temperature_core": "1",
+                 "temperature_surface": "2"}]
+        result = mappings.analyze_schema(old_cols, new_cols, rows, batch_no=2)
+        proposal = result["mappings"][0]
+        self.assertEqual("ambiguous", proposal["status"])
+        self.assertEqual(["temperature_core", "temperature_surface"],
+                         proposal["candidate_columns"])
+        self.assertFalse(proposal["confirmed"])
+
+    def test_revoke_mapping_rechecks_manual_exception_and_publish_scope(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temp_unit,source\n"
+                   "D1,86,F,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temp_unit",
+        })
+        project_dir = os.path.join(self.tmp.name, "p")
+        exc = {}
+        exc.update(server.exc_store.set_exception(
+            project_dir, "r0004",
+            "unit_convert:temperature:post:out_of_range", "flag",
+            reason="check this source measurement"))
+        for item in exc.values():
+            item["mapping_id"] = "b1:temperature"
+        server.exc_store.save_exceptions(project_dir, exc)
+
+        status, res = call("POST", "/api/projects/p/batch-mappings/1/revoke",
+                           {"id": "b1:temperature"})
+        self.assertEqual(200, status)
+        self.assertEqual({("r0004", "unit_convert:temperature:post:out_of_range")},
+                         {(x["row_id"], x["scope"])
+                          for x in res["affected_decisions"]})
+        reopened = server.exc_store.load_exceptions(project_dir)
+        self.assertFalse(next(iter(reopened.values()))["active"])
+
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0,
+            "include_appended": True,
+        })
+        self.assertEqual([], preview["adopted_scope"]["confirmed_mapping_ids"])
+        self.assertEqual(["r0004"], [r["_id"] for r in preview["unmapped_rows"]])
+
+    def test_persisted_mapping_trace_is_available_after_reopen(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temp_unit,source\n"
+                   "D1,86,F,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temp_unit",
+        })
+        status, info = call("GET", "/api/projects/p")
+        self.assertEqual(200, status)
+        self.assertIn("b1:temperature", info["mappings"])
+
+        status, applied = call("POST", "/api/projects/p/apply", {
+            "steps": STEPS, "source_version": 0,
+            "include_appended": True, "label": "mapped",
+        })
+        self.assertEqual(201, status)
+        path = os.path.join(self.tmp.name, "p", "versions",
+                            f"v{applied['version']}.json")
+        saved = json.load(open(path, encoding="utf-8"))
+        self.assertEqual("schema_mapping", saved["step_reports"][0]["type"])
+        status, lineage = call("GET", "/api/projects/p/versions/"
+                                      f"{applied['version']}/lineage/r0004")
+        self.assertEqual(200, status)
+        self.assertIn("结构对应", lineage["timeline"][0]["description"])
+
+    def test_manual_exception_is_bound_to_mapping_and_record(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temp_unit,source\n"
+                   "D1,9999,F,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temp_unit",
+        })
+        bounded_steps = [{
+            "type": "unit_convert",
+            "params": {**STEPS[0]["params"],
+                       "post_max_value": 100,
+                       "post_policies": {"temperature": [
+                           {"issue": "out_of_range", "action": "drop"}]}},
+        }]
+        # An old row+scope key can never control the newly mapped r0004.
+        project_dir = os.path.join(self.tmp.name, "p")
+        server.exc_store.set_exception(
+            project_dir, "r0004",
+            "unit_convert:temperature:post:out_of_range", "flag")
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": bounded_steps, "source_version": 0,
+            "include_appended": True,
+        })
+        self.assertEqual(200, status)
+        self.assertNotIn("r0004", {r["_id"] for r in preview["sample"]})
+
+        status, _ = call("POST", "/api/projects/p/exceptions/set", {
+            "row_id": "r0004",
+            "scope": "unit_convert:temperature:post:out_of_range",
+            "action": "flag", "mapping_id": "b1:temperature",
+        })
+        self.assertEqual(200, status)
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": bounded_steps, "source_version": 0,
+            "include_appended": True,
+        })
+        self.assertIn("r0004", {r["_id"] for r in preview["sample"]})
+
+
+if __name__ == "__main__":
+    unittest.main()

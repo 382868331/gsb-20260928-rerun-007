@@ -44,7 +44,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [exceptions, setExceptions] = useState<Record<string, ManualException>>({});
-  const [appended, setAppended] = useState<{ _id: string; batch: number; label?: string }[]>([]);
+  const [appended, setAppended] = useState<{ _id: string; batch: number; label?: string; columns?: string[] }[]>([]);
+  const [mappings, setMappings] = useState<Record<string, import("./types").MeasurementMapping>>({});
   const [includeAppended, setIncludeAppended] = useState(true);
 
   const [newName, setNewName] = useState("");
@@ -61,6 +62,7 @@ export default function App() {
       setColumns(info.columns);
       setExceptions(info.exceptions ?? {});
       setAppended(info.appended ?? []);
+      setMappings(info.mappings ?? {});
       openVersion(info.manifest.latest_version);
       setSourceVersion(info.manifest.latest_version);
     });
@@ -71,6 +73,7 @@ export default function App() {
       setManifest(info.manifest);
       setExceptions(info.exceptions ?? {});
       setAppended(info.appended ?? []);
+      setMappings(info.mappings ?? {});
     });
   }
 
@@ -132,6 +135,7 @@ export default function App() {
       setManifest(info.manifest);
       setExceptions(info.exceptions ?? {});
       setAppended(info.appended ?? []);
+      setMappings(info.mappings ?? {});
       setSteps([]);
       setLabel("");
       invalidatePreview();
@@ -313,6 +317,16 @@ export default function App() {
                 onExceptionChanged={refreshProject}
               />
               <DataTable rows={preview.sample} columns={columns} />
+              {(preview.unmapped_rows?.length || 0) > 0 && (
+                <div className="warning-box">
+                  <strong>尚未确定的记录：</strong>
+                  {preview.unmapped_rows?.map((row) => row._id).join(", ")}
+                  <div className="small muted">这些记录不参与本次已确认部分预览，也不会进入发布范围。</div>
+                </div>
+              )}
+              {preview.adopted_scope && (
+                <p className="small muted">{preview.adopted_scope.note}</p>
+              )}
             </section>
           )}
 
@@ -327,8 +341,11 @@ export default function App() {
           </section>
           <BatchPanel
             project={project}
+            steps={steps}
             appended={appended}
+            mappings={mappings}
             onAppended={() => refreshProject()}
+            onMappingsChanged={() => refreshProject()}
           />
           {manifest && (
             <ExceptionsPanel

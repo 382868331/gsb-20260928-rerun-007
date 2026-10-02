@@ -1,4 +1,4 @@
-import type { Manifest, PipelineStep, PreviewResult, Row, StepReport } from "./types";
+import type { Manifest, MeasurementMapping, PipelineStep, PreviewResult, Row, StepReport } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -23,7 +23,8 @@ export const api = {
     request<{
       manifest: Manifest; columns: string[]; row_count: number;
       exceptions?: Record<string, import("./types").ManualException>;
-      appended?: { _id: string; batch: number; label?: string }[];
+      appended?: { _id: string; batch: number; label?: string; columns?: string[] }[];
+      mappings?: Record<string, MeasurementMapping>;
     }>(
       `/api/projects/${encodeURIComponent(name)}`
     ),
@@ -34,12 +35,13 @@ export const api = {
     ),
 
   preview: (name: string, steps: PipelineStep[], sourceVersion?: number,
-    opts?: { includeAppended?: boolean; useExceptions?: boolean }) =>
+    opts?: { includeAppended?: boolean; includeUnmapped?: boolean; useExceptions?: boolean }) =>
     request<PreviewResult>(`/api/projects/${encodeURIComponent(name)}/preview`, {
       method: "POST",
       body: JSON.stringify({
         source_version: sourceVersion,
         include_appended: opts?.includeAppended ?? false,
+        include_unmapped: opts?.includeUnmapped ?? false,
         use_exceptions: opts?.useExceptions ?? true,
         steps: steps.map(({ type, params }) => ({ type, params })),
       }),
@@ -72,9 +74,33 @@ export const api = {
       { method: "POST", body: JSON.stringify({ csv, label }) },
     ),
 
+  analyzeBatchMappings: (name: string, batch: number, steps: PipelineStep[]) =>
+    request<{
+      old_columns: string[]; new_columns: string[];
+      added_columns: string[]; removed_columns: string[];
+      mappings: MeasurementMapping[];
+      confirmed_mappings: MeasurementMapping[];
+      summary: { reusable: number; needs_mapping: number; conflicting: number };
+    }>(`/api/projects/${encodeURIComponent(name)}/batch-mappings/${batch}`, {
+      method: "POST",
+      body: JSON.stringify({ steps: steps.map(({ type, params }) => ({ type, params })) }),
+    }),
+
+  confirmBatchMapping: (name: string, batch: number, payload: Partial<MeasurementMapping>) =>
+    request<{ ok: boolean; mapping: MeasurementMapping; mappings: Record<string, MeasurementMapping> }>(
+      `/api/projects/${encodeURIComponent(name)}/batch-mappings/${batch}/confirm`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  revokeBatchMapping: (name: string, batch: number, id: string) =>
+    request<{ ok: boolean; mappings: Record<string, MeasurementMapping>; affected_decisions: unknown[] }>(
+      `/api/projects/${encodeURIComponent(name)}/batch-mappings/${batch}/revoke`,
+      { method: "POST", body: JSON.stringify({ id }) },
+    ),
+
   setException: (name: string, payload: {
     row_id: string; scope: string; action: string;
-    replacement?: number | null; reason?: string;
+    replacement?: number | null; reason?: string; mapping_id?: string;
   }) =>
     request<{ ok: boolean }>(
       `/api/projects/${encodeURIComponent(name)}/exceptions/set`,

@@ -76,7 +76,8 @@ def apply(rows, params):
             from ..pipeline import apply_manual_exception
             policy, decision_source = apply_manual_exception(
                 policy, row["_id"], "number_check", col, category,
-                exceptions, stage="check")
+                exceptions, stage="check",
+                mapping_ids=row.get("_mapping_ids"))
             action = policy["action"]
             counts[category].setdefault(action, 0)
             counts[category][action] += 1
@@ -85,6 +86,8 @@ def apply(rows, params):
                 "stage": "number_check", "issue": category,
                 "original_value": raw_value, "action": action,
             }
+            if row.get("_mapping_ids"):
+                detail["mapping_ids"] = row.get("_mapping_ids")
             if policy.get("label"):
                 detail["rule_label"] = policy["label"]
             if policy.get("source_column"):

@@ -126,7 +126,7 @@ def _action_records(step_type, stats, lineage):
     return records
 
 
-def run(rows, spec, base_lineage=None, exceptions=None):
+def run(rows, spec, base_lineage=None, exceptions=None, pre_reports=None):
     """Run a spec over rows purely, without persisting anything.
 
     Returns (final_rows, global_lineage, step_reports).
@@ -136,7 +136,7 @@ def run(rows, spec, base_lineage=None, exceptions=None):
     validate_spec(spec)
     current = [dict(r) for r in rows]
     global_lineage = dict(base_lineage or {r["_id"]: [r["_id"]] for r in current})
-    reports = []
+    reports = list(pre_reports or [])
 
     for step in spec["steps"]:
         step_type = step["type"]
@@ -170,7 +170,7 @@ def scope_for(step_type, column, issue, stage=None):
 
 
 def apply_manual_exception(policy, row_id, step_type, column, issue,
-                           exceptions, stage=None):
+                           exceptions, stage=None, mapping_ids=None):
     """Override a resolved policy with a per-row manual decision.
 
     Returns (policy, source) where source is "rule" or "manual";
@@ -181,6 +181,13 @@ def apply_manual_exception(policy, row_id, step_type, column, issue,
     from .exceptions import key_for
     key = key_for(row_id, scope_for(step_type, column, issue, stage))
     manual = exceptions.get(key)
+    required_ids = set(mapping_ids or [])
+    if manual:
+        mapping_id = manual.get("mapping_id")
+        if required_ids and (not mapping_id or mapping_id not in required_ids):
+            manual = None
+        elif not required_ids and mapping_id:
+            manual = None
     if not manual or not manual.get("active", True):
         return policy, "rule"
     overridden = dict(policy)
@@ -188,6 +195,7 @@ def apply_manual_exception(policy, row_id, step_type, column, issue,
     overridden["replacement"] = manual.get("replacement")
     overridden["manual"] = True
     overridden["manual_reason"] = manual.get("reason", "人工例外")
+    overridden["mapping_id"] = manual.get("mapping_id")
     return overridden, "manual"
 
 
@@ -210,7 +218,7 @@ def atomic_write_json(path, payload):
 
 
 def apply_spec(project_dir, spec, label="", source_version=None,
-               exceptions=None):
+               exceptions=None, pre_reports=None):
     """Execute spec against the project's latest version and commit a new one.
 
     The new version is fully built in memory first; only when all steps
@@ -229,7 +237,7 @@ def apply_spec(project_dir, spec, label="", source_version=None,
 
     final_rows, lineage, reports = run(
         source["rows"], spec, base_lineage=source.get("lineage"),
-        exceptions=exceptions)
+        exceptions=exceptions, pre_reports=pre_reports)
 
     new_no = latest_no + 1
     version_payload = {

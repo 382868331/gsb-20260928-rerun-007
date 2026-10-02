@@ -44,7 +44,25 @@
 
 ## 追加实验批次与人工例外
 
-- **追加批次**：`POST /api/projects/{name}/batches/append` 追加列结构一致的新批次。
+- **结构演变必须显式测量对应**：追加批次不再要求表头与旧批次完全一致。
+  `POST /api/projects/{name}/batch-mappings/{batch}` 传入当前步骤后，会把旧规则分成
+  `reusable`（可沿用）、`needs_mapping`（需确认）和 `conflicting`（矛盾/缺少对应）。
+  温度从单列拆成 `temperature_value + temp_unit`、单位从固定配置变成逐条记录，+  或来源列同名但测量对象不同，都不会仅凭列名自动继承；多个候选值列会返回
+  `ambiguous`，必须由用户选择，不能默认挑一个。
+- **确认与部分预览**：`batch-mappings/{batch}/confirm` 保存
+  `{target_column, value_column, unit_column, source_column, sources}`。
+  预览时只把已确认测量投影给清洗步骤，并返回 `unmapped_rows` 与 `adopted_scope`；
+  用户可以只确认部分测量并预览这部分结果，未确认记录清楚标示且不进入发布。
+  投影行保留 `_raw_<measurement>`、`_raw_<measurement>_unit`、原始来源列与
+  `schema_mapping` 血缘步骤，保存重开后仍可从原始列追溯到发布值。
+- **例外跟随原始记录和测量**：新结构记录上的人工例外必须携带对应
+  `mapping_id`；没有绑定或绑定到其他测量的例外不会生效。撤回映射
+  （`batch-mappings/{batch}/revoke`）会停用依赖它的人工例外，并要求重新检查；
+  已发布旧批次与统计永不重写。
+- **方案比较**：`POST /api/projects/{name}/mapping-schemas` 分别返回每个方案的
+  结构解释（新增/移除列与对应说明）、可继承/需确认/矛盾的清洗规则，以及数据新增。
+
+- **追加批次**：`POST /api/projects/{name}/batches/append` 追加新批次，原始新列原样保存。
   新行写入 `workspace.json` 与 `batches/batch-N.json`，v0 与所有已发布版本文件
   永不重写；预览/执行时带 `include_appended: true` 即在同一套来源规则下一起清洗，
   发布时先落一个 `kind: "batch_append"` 的数据快照版本，再产出清洗版本。
@@ -116,6 +134,9 @@ cd frontend && node node_modules/vite/bin/vite.js build
 - `POST /api/projects/{name}/apply` 全部步骤成功后原子提交新版本，可带
   `source_version` 从任意历史版本分叉，版本仍只追加、不变更旧版本
 - `POST /api/projects/{name}/batches/append` 追加新实验批次（不重写已发布版本）
+- `POST /api/projects/{name}/batch-mappings/{n}` 分析批次结构与规则继承状态
+- `POST /api/projects/{name}/batch-mappings/{n}/confirm|revoke` 确认或撤回测量对应
+- `POST /api/projects/{name}/mapping-schemas` 比较两个结构对应方案的结构、规则与数据新增差异
 - `POST /api/projects/{name}/exceptions/set|revoke` 设置或撤回单条人工例外
 - `POST /api/projects/{name}/rule-impact` 规则改动影响分析（旧记录/新记录/冲突例外）
 - `POST /api/projects/{name}/diff` 比较两个版本，区分数据新增、规则变化、人工决定

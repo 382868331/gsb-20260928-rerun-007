@@ -84,7 +84,8 @@ def apply(rows, params):
             policy = legacy_map[issue]
         policy, source = apply_manual_exception(
             policy, row_for_match["_id"], "unit_convert",
-            column, issue, exceptions, stage=stage)
+            column, issue, exceptions, stage=stage,
+            mapping_ids=row_for_match.get("_mapping_ids"))
         return policy, source
 
     converted = 0
@@ -127,6 +128,8 @@ def apply(rows, params):
                 "original_value": raw_value, "unit": unit,
                 "action": policy["action"],
             }
+            if row.get("_mapping_ids"):
+                detail["mapping_ids"] = row["_mapping_ids"]
             if policy.get("label"):
                 detail["rule_label"] = policy["label"]
             if policy.get("source_column"):
@@ -189,6 +192,8 @@ def apply(rows, params):
                 "original_value": raw_value, "converted_value": converted_value,
                 "unit": unit, "action": policy["action"],
             }
+            if row.get("_mapping_ids"):
+                detail["mapping_ids"] = row["_mapping_ids"]
             detail["decision_source"] = (
                 "manual" if decision_source == "manual" else "rule")
             if decision_source == "manual":

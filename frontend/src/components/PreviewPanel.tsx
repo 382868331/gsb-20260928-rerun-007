@@ -103,6 +103,9 @@ function AffectedRows({ project, report, onExceptionChanged }: {
                   project={project}
                   rowId={String(detail.row_id ?? action.origins[0] ?? "")}
                   scope={scope}
+                  mappingIds={(Array.isArray(detail.mapping_ids)
+                    ? detail.mapping_ids.map(String) : []).filter((id) =>
+                    id.endsWith(`:${String(detail.column ?? "")}`))}
                   onChanged={onExceptionChanged}
                 />
               ) : null}
@@ -125,8 +128,8 @@ function scopeForDetail(stepType: string, detail: Record<string, unknown>): stri
   return `number_check:${column}:check:${issue}`;
 }
 
-function ManualButtons({ project, rowId, scope, onChanged }: {
-  project: string; rowId: string; scope: string;
+function ManualButtons({ project, rowId, scope, mappingIds, onChanged }: {
+  project: string; rowId: string; scope: string; mappingIds: string[];
   onChanged?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -138,6 +141,7 @@ function ManualButtons({ project, rowId, scope, onChanged }: {
       await api.setException(project, {
         row_id: rowId, scope, action,
         reason: action === "flag" ? "人工保留待核对" : "人工排除",
+        mapping_id: mappingIds[0],
       });
       setSaved(action === "flag" ? "已设为待核对" : "已设为排除");
       onChanged?.();

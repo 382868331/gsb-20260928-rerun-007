@@ -39,7 +39,7 @@ def key_for(row_id, scope):
 
 
 def set_exception(project_dir, row_id, scope, action, replacement=None,
-                  reason=""):
+                  reason="", mapping_id=None):
     if action not in VALID_ACTIONS:
         raise ValueError(
             f"manual action must be one of {', '.join(VALID_ACTIONS)}"
@@ -48,7 +48,7 @@ def set_exception(project_dir, row_id, scope, action, replacement=None,
     exceptions[key_for(row_id, scope)] = {
         "row_id": row_id, "scope": scope, "action": action,
         "replacement": replacement, "reason": reason or "人工例外",
-        "active": True,
+        "active": True, "mapping_id": mapping_id,
     }
     save_exceptions(project_dir, exceptions)
     return exceptions

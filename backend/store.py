@@ -107,10 +107,6 @@ def append_batch(projects_root, name, csv_text, batch_label=""):
         for key in row:
             if not key.startswith("_") and key not in old_columns:
                 old_columns.append(key)
-    unknown = [c for c in new_columns if c not in old_columns]
-    if unknown:
-        raise ValueError("新批次出现原始数据中没有的列：" + ", ".join(unknown))
-
     workspace_path = os.path.join(project_dir, "workspace.json")
     if os.path.isfile(workspace_path):
         with open(workspace_path, encoding="utf-8") as handle:
@@ -120,6 +116,8 @@ def append_batch(projects_root, name, csv_text, batch_label=""):
     else:
         base_rows = v0["rows"]
         appended = []
+    batches_dir = os.path.join(project_dir, "batches")
+    batch_no = len(appended_batch_files(project_dir)) + 1
     existing_ids = {row["_id"] for row in base_rows}
     next_index = max((int(rid[1:]) for rid in existing_ids
                       if rid.startswith("r") and rid[1:].isdigit()),
@@ -127,19 +125,18 @@ def append_batch(projects_root, name, csv_text, batch_label=""):
     new_rows = []
     for record in reader:
         next_index += 1
-        row = {"_id": f"r{next_index:04d}"}
-        for key in old_columns:
+        row = {"_id": f"r{next_index:04d}", "_batch": batch_no}
+        for key in new_columns:
             value = record.get(key, "")
             row[key] = "" if value is None else value
         new_rows.append(row)
     if not new_rows:
         raise ValueError("CSV contains no data rows")
 
-    batches_dir = os.path.join(project_dir, "batches")
     os.makedirs(batches_dir, exist_ok=True)
-    batch_no = len(appended_batch_files(project_dir)) + 1
     atomic_write_json(os.path.join(batches_dir, f"batch-{batch_no}.json"), {
         "batch": batch_no, "label": batch_label or f"追加批次 {batch_no}",
+        "columns": new_columns,
         "rows": new_rows,
     })
     all_rows = list(base_rows) + new_rows
@@ -148,7 +145,8 @@ def append_batch(projects_root, name, csv_text, batch_label=""):
         "lineage": {r["_id"]: [r["_id"]] for r in all_rows},
         "appended": appended + [
             {"_id": r["_id"], "batch": batch_no,
-             "label": batch_label or f"追加批次 {batch_no}"}
+             "label": batch_label or f"追加批次 {batch_no}",
+             "columns": new_columns}
             for r in new_rows],
     })
     return {"project_dir": project_dir, "new_rows": new_rows,
@@ -173,3 +171,51 @@ def working_rows(project_dir):
         return data["rows"], data["lineage"], data.get("appended", [])
     v0 = load_version(project_dir, 0)
     return v0["rows"], v0["lineage"], []
+
+
+def mappings_path(project_dir):
+    return os.path.join(project_dir, "mappings.json")
+
+
+def load_mappings(project_dir):
+    path = mappings_path(project_dir)
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return {key: item for key, item in data.get("mappings", {}).items()
+            if item.get("status") != "revoked"}
+
+
+def save_mapping_records(project_dir, records):
+    mappings = {item["id"]: item for item in records}
+    atomic_write_json(mappings_path(project_dir), {"mappings": mappings})
+    return mappings
+
+
+def save_mapping(project_dir, mapping):
+    path = mappings_path(project_dir)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as handle:
+            all_records = json.load(handle).get("mappings", {})
+    else:
+        all_records = {}
+    all_records[mapping["id"]] = mapping
+    atomic_write_json(path, {"mappings": all_records})
+    return load_mappings(project_dir)
+
+
+def revoke_mapping(project_dir, mapping_id):
+    path = mappings_path(project_dir)
+    if not os.path.isfile(path):
+        raise ValueError(f"mapping '{mapping_id}' not found")
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    records = data.get("mappings", {})
+    if mapping_id not in records:
+        raise ValueError(f"mapping '{mapping_id}' not found")
+    records[mapping_id]["status"] = "revoked"
+    records[mapping_id]["revoked"] = True
+    atomic_write_json(path, {"mappings": records})
+    return {key: item for key, item in records.items()
+            if item.get("status") != "revoked"}
