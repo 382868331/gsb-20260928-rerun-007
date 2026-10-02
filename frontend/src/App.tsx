@@ -15,7 +15,8 @@ import { VersionHistory } from "./components/VersionHistory";
 import { LineageModal } from "./components/LineageModal";
 import { BatchPanel } from "./components/BatchPanel";
 import { ExceptionsPanel } from "./components/ExceptionsPanel";
-import type { ManualException } from "./types";
+import { SchemaMappingPanel } from "./components/SchemaMappingPanel";
+import type { ManualException, SchemaBatch } from "./types";
 
 let stepSeq = 0;
 const newStep = (type: StepType): PipelineStep => ({
@@ -45,6 +46,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [exceptions, setExceptions] = useState<Record<string, ManualException>>({});
   const [appended, setAppended] = useState<{ _id: string; batch: number; label?: string }[]>([]);
+  const [schemaBatches, setSchemaBatches] = useState<SchemaBatch[]>([]);
   const [includeAppended, setIncludeAppended] = useState(true);
 
   const [newName, setNewName] = useState("");
@@ -61,6 +63,7 @@ export default function App() {
       setColumns(info.columns);
       setExceptions(info.exceptions ?? {});
       setAppended(info.appended ?? []);
+      setSchemaBatches(info.schema_batches ?? []);
       openVersion(info.manifest.latest_version);
       setSourceVersion(info.manifest.latest_version);
     });
@@ -71,6 +74,7 @@ export default function App() {
       setManifest(info.manifest);
       setExceptions(info.exceptions ?? {});
       setAppended(info.appended ?? []);
+      setSchemaBatches(info.schema_batches ?? []);
     });
   }
 
@@ -297,6 +301,15 @@ export default function App() {
           {preview && (
             <section className="card">
               <h2>执行前预览（不写盘）</h2>
+              <p className="small muted">
+                本次采用范围：{preview.adopted_scope?.status === "complete"
+                  ? "已确认结构全部采用"
+                  : preview.adopted_scope?.status === "partial"
+                    ? `部分采用，未确定 ${preview.unresolved_mappings?.length ?? 0} 项`
+                    : "当前选择版本"}
+                {preview.structure_actions?.length
+                  ? `；结构解释 ${preview.structure_actions.length} 条` : ""}
+              </p>
               <PreviewPanel
                 project={project}
                 preview={preview}
@@ -329,6 +342,12 @@ export default function App() {
             project={project}
             appended={appended}
             onAppended={() => refreshProject()}
+          />
+          <SchemaMappingPanel
+            project={project}
+            batches={schemaBatches}
+            oldColumns={columns}
+            onChange={refreshProject}
           />
           {manifest && (
             <ExceptionsPanel

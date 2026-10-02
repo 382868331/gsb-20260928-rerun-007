@@ -342,3 +342,23 @@ th { background: #f8fafc; font-weight: 600; }
 .manual-decide { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
 .revoked-row { opacity: 0.55; }
 .diff-list { margin: 8px 0 0 18px; font-size: 13px; }
+
+.rule-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  background: #fff;
+}
+.mapping-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #edf0f3;
+}
+.mapping-row .row { align-items: center; }
+.mapping-row select, .mapping-row input { min-width: 130px; }
+@media (max-width: 850px) {
+  .mapping-row { display: block; }
+}

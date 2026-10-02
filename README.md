@@ -44,6 +44,26 @@
 
 ## 追加实验批次与人工例外
 
+### 结构变化批次与测量对应
+
+当追加批次出现旧批次没有的列时，系统不会按同名列直接套用规则，而是把该批次作为
+**结构变化批次**保存原件，并生成测量对应提案：
+
+- **可沿用**：用户确认测量及单位对应后，已有规则才可继承；
+- **需补充对应关系**：如 `temperature_value + temperature_unit` 对应旧的
+  `temperature + temp_unit`，需明确目标测量与逐条单位列；
+- **存在矛盾/多解**：多个旧测量都合理时只列候选，不自动选择。
+
+用户可逐条确认部分测量并立即预览：已确认部分按规则清洗，未确认部分保留在原始批次文件中，
+结果行以 `_unresolved_measurements` 标明且规则步骤跳过这些测量。发布版本记录
+`adopted_scope`（本次采用范围）和 `structure_actions`（从原列、原文、单位解释到目标测量的说明），
+血缘时间线也包含结构对应步骤。撤回某个对应会把依赖它的人工例外标记为 `needs_recheck`，
+例外只按原始行 id、批次和 mapping id 生效，不会漂移到同名列或另一个测量。
+
+结构方案比较接口分别返回 `structure_interpretation`（结构解释差异）、
+`cleaning_rule_differences`（规则将作用到哪些行的差异）以及 `data_added/value_changes`
+（数据新增或值变化）。所有已发布旧版本及统计继续保持原样。
+
 - **追加批次**：`POST /api/projects/{name}/batches/append` 追加列结构一致的新批次。
   新行写入 `workspace.json` 与 `batches/batch-N.json`，v0 与所有已发布版本文件
   永不重写；预览/执行时带 `include_appended: true` 即在同一套来源规则下一起清洗，
@@ -116,6 +136,10 @@ cd frontend && node node_modules/vite/bin/vite.js build
 - `POST /api/projects/{name}/apply` 全部步骤成功后原子提交新版本，可带
   `source_version` 从任意历史版本分叉，版本仍只追加、不变更旧版本
 - `POST /api/projects/{name}/batches/append` 追加新实验批次（不重写已发布版本）
+- `GET  /api/projects/{name}/batches/{n}/proposal` 查看结构变化批次的测量提案
+- `POST /api/projects/{name}/batches/{n}/mappings` 确认一个或多个测量/单位对应
+- `POST /api/projects/{name}/batches/{n}/mappings/revoke` 撤回对应并重检依赖决定
+- `POST /api/projects/{name}/batches/{n}/mapping-diff` 比较两套对应方案
 - `POST /api/projects/{name}/exceptions/set|revoke` 设置或撤回单条人工例外
 - `POST /api/projects/{name}/rule-impact` 规则改动影响分析（旧记录/新记录/冲突例外）
 - `POST /api/projects/{name}/diff` 比较两个版本，区分数据新增、规则变化、人工决定

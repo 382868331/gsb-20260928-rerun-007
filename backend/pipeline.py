@@ -210,7 +210,8 @@ def atomic_write_json(path, payload):
 
 
 def apply_spec(project_dir, spec, label="", source_version=None,
-               exceptions=None):
+               exceptions=None, structure_actions=None,
+               adopted_scope=None):
     """Execute spec against the project's latest version and commit a new one.
 
     The new version is fully built in memory first; only when all steps
@@ -230,6 +231,10 @@ def apply_spec(project_dir, spec, label="", source_version=None,
     final_rows, lineage, reports = run(
         source["rows"], spec, base_lineage=source.get("lineage"),
         exceptions=exceptions)
+    structure_actions = (source.get("structure_actions")
+                         if structure_actions is None else structure_actions)
+    adopted_scope = (source.get("adopted_scope")
+                     if adopted_scope is None else adopted_scope)
 
     new_no = latest_no + 1
     version_payload = {
@@ -238,6 +243,8 @@ def apply_spec(project_dir, spec, label="", source_version=None,
         "rows": final_rows,
         "lineage": lineage,
         "step_reports": reports,
+        "structure_actions": structure_actions or [],
+        "adopted_scope": adopted_scope,
         "step_actions": [
             {"type": report["type"], "label": report["label"],
              "actions": report.get("actions", [])}
@@ -257,6 +264,8 @@ def apply_spec(project_dir, spec, label="", source_version=None,
         "steps": [{"type": s["type"], "params": s.get("params", {})}
                   for s in spec["steps"]],
         "reports": reports,
+        "structure_actions": structure_actions or [],
+        "adopted_scope": adopted_scope,
     })
     manifest["latest_version"] = new_no
     atomic_write_json(os.path.join(project_dir, "manifest.json"), manifest)

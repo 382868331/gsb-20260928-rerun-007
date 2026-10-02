@@ -1,4 +1,7 @@
-import type { Manifest, PipelineStep, PreviewResult, Row, StepReport } from "./types";
+import type {
+  Manifest, MappingPlanDiff, PipelineStep, PreviewResult, Row,
+  SchemaBatch, StepReport,
+} from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -23,7 +26,8 @@ export const api = {
     request<{
       manifest: Manifest; columns: string[]; row_count: number;
       exceptions?: Record<string, import("./types").ManualException>;
-      appended?: { _id: string; batch: number; label?: string }[];
+      appended?: { _id: string; batch: number; label?: string; schema_status?: string }[];
+      schema_batches?: SchemaBatch[];
     }>(
       `/api/projects/${encodeURIComponent(name)}`
     ),
@@ -67,9 +71,34 @@ export const api = {
     ),
 
   appendBatch: (name: string, csv: string, label: string) =>
-    request<{ ok: boolean; batch: number; new_ids: string[]; new_rows: Row[] }>(
+    request<{ ok: boolean; batch: number; schema_status: string; proposal?: SchemaBatch["proposal"]; new_ids: string[]; new_rows: Row[] }>(
       `/api/projects/${encodeURIComponent(name)}/batches/append`,
       { method: "POST", body: JSON.stringify({ csv, label }) },
+    ),
+
+  confirmMappings: (name: string, batch: number, confirmed: {
+    id: string; target_measurement: string; target_unit_column?: string;
+    fixed_unit?: string;
+  }[], replace = false) =>
+    request<{ ok: boolean } & SchemaBatch>(
+      `/api/projects/${encodeURIComponent(name)}/batches/${batch}/mappings`,
+      { method: "POST", body: JSON.stringify({ confirmed, replace }) },
+    ),
+
+  revokeMapping: (name: string, batch: number, mappingId: string) =>
+    request<{ ok: boolean } & SchemaBatch & {
+      dependent_decisions?: { key: string; status: string }[];
+    }>(`/api/projects/${encodeURIComponent(name)}/batches/${batch}/mappings/revoke`, {
+      method: "POST", body: JSON.stringify({ mapping_id: mappingId }),
+    }),
+
+  compareMappings: (name: string, batch: number, payload: {
+    confirmed: { id: string; target_measurement: string; target_unit_column?: string }[];
+    steps?: PipelineStep[];
+  }) =>
+    request<MappingPlanDiff>(
+      `/api/projects/${encodeURIComponent(name)}/batches/${batch}/mapping-diff`,
+      { method: "POST", body: JSON.stringify(payload) },
     ),
 
   setException: (name: string, payload: {

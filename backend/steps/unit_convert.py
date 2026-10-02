@@ -103,6 +103,10 @@ def apply(rows, params):
         actions_by_issue[stage][issue][action] += 1
 
     for row in rows:
+        if column in row.get("_unresolved_measurements", []):
+            out.append(dict(row))
+            lineage[row["_id"]] = [row["_id"]]
+            continue
         unit = canonical_unit
         if unit_column:
             raw_unit = row.get(unit_column)

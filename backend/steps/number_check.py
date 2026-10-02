@@ -62,6 +62,8 @@ def apply(rows, params):
         drop_row = False
         row_flags = []
         for col in columns:
+            if col in row.get("_unresolved_measurements", []):
+                continue
             raw_value = row.get(col)
             category, _number = classify_number(
                 raw_value, min_value, max_value)

@@ -8,7 +8,8 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import analysis, exceptions as exc_store, pipeline, store
+from . import (analysis, exceptions as exc_store, pipeline,
+               schema_mapping, store)
 
 
 PROJECTS_ROOT = os.environ.get(
@@ -30,6 +31,37 @@ def _columns(rows):
             if not key.startswith("_") and key not in seen:
                 seen.append(key)
     return seen
+
+
+def _structure_context(rows, schema_batches):
+    actions = []
+    confirmed_ids = set()
+    pending = []
+    by_batch = {item["batch"]: item for item in schema_batches}
+    for row in rows:
+        for provenance in row.get("_structure_provenance", []):
+            text = (
+                f"结构对应：{', '.join(provenance['source_columns'])} "
+                f"→ {provenance['target_measurement']}；"
+                f"原始文字 {provenance.get('original_text')!r}"
+            )
+            explanation = provenance.get("unit_explanation")
+            if explanation:
+                text += f"；{explanation}"
+            actions.append({"origins": [row["_id"]],
+                            "description": text,
+                            "detail": provenance})
+            confirmed_ids.add(provenance.get("mapping_id"))
+    for item in schema_batches:
+        for mapping_id in item.get("pending_ids", []):
+            pending.append({"batch": item["batch"], "mapping_id": mapping_id})
+    adopted = {
+        "status": "partial" if pending else "complete",
+        "confirmed_mapping_ids": sorted(confirmed_ids),
+        "pending_mappings": pending,
+        "batch_count": len(by_batch),
+    }
+    return actions, adopted
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -55,7 +87,8 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _snapshot_workspace(self, project_dir, manifest, rows, lineage):
+    def _snapshot_workspace(self, project_dir, manifest, rows, lineage,
+                            structure_actions=None, adopted_scope=None):
         """Commit appended batches as a regular append version (no rules).
 
         The version records data addition only: no cleaning steps run,
@@ -67,6 +100,8 @@ class Handler(BaseHTTPRequestHandler):
             "created_from": 0,
             "rows": rows, "lineage": lineage,
             "step_reports": [], "step_actions": [],
+            "structure_actions": structure_actions or [],
+            "adopted_scope": adopted_scope or {"status": "workspace"},
             "kind": "batch_append",
         }
         pipeline.atomic_write_json(
@@ -76,6 +111,7 @@ class Handler(BaseHTTPRequestHandler):
             "version": new_no, "created_from": 0,
             "label": "追加实验批次", "steps": [], "reports": [],
             "kind": "batch_append",
+            "adopted_scope": adopted_scope or {"status": "workspace"},
         })
         manifest["latest_version"] = new_no
         pipeline.atomic_write_json(
@@ -138,7 +174,8 @@ class Handler(BaseHTTPRequestHandler):
                         "columns": _columns(latest["rows"]),
                         "row_count": len(latest["rows"]),
                         "exceptions": exc_store.load_exceptions(project_dir),
-                        "appended": store.working_rows(project_dir)[2],
+                        "appended": store.working_rows_extended(project_dir)[2],
+                        "schema_batches": store.working_rows_extended(project_dir)[3],
                     })
                 if parts[3] == "versions" and len(parts) >= 5:
                     version_no = int(parts[4])
@@ -149,6 +186,8 @@ class Handler(BaseHTTPRequestHandler):
                             "rows": version["rows"],
                             "columns": _columns(version["rows"]),
                             "step_reports": version["step_reports"],
+                            "structure_actions": version.get("structure_actions", []),
+                            "adopted_scope": version.get("adopted_scope"),
                         })
                     if len(parts) == 7 and parts[5] == "lineage":
                         row_id = parts[6]
@@ -156,8 +195,15 @@ class Handler(BaseHTTPRequestHandler):
                         if origins is None:
                             raise ValueError(f"row '{row_id}' not in v{version_no}")
                         v0 = store.load_version(project_dir, 0)
-                        raw = {r["_id"]: r for r in v0["rows"]}
+                        raw = {r["_id"]: r
+                               for r in v0["rows"] + store.raw_rows(project_dir)}
                         timeline = []
+                        for action in version.get("structure_actions", []):
+                            if row_id in action.get("origins", []):
+                                timeline.append({
+                                    "step": "结构对应",
+                                    "description": action["description"],
+                                })
                         for step_info in version.get("step_actions", []):
                             for action in step_info.get("actions", []):
                                 if row_id in action.get("origins", []):
@@ -189,15 +235,67 @@ class Handler(BaseHTTPRequestHandler):
                 name = parts[2]
                 project_dir = store.project_path(PROJECTS_ROOT, name)
                 manifest = store.load_manifest(project_dir)
-                work_rows, work_lineage, appended = store.working_rows(project_dir)
+                (work_rows, work_lineage, appended,
+                 schema_batches) = store.working_rows_extended(project_dir)
                 if len(parts) == 5 and parts[3] == "batches":
                     result = store.append_batch(
                         PROJECTS_ROOT, name, body.get("csv", ""),
                         batch_label=body.get("label", ""))
                     return self._send(201, {
                         "ok": True, "batch": result["batch"],
+                        "schema_status": result.get("schema_status", "compatible"),
+                        "proposal": result.get("proposal"),
                         "new_ids": result["new_ids"],
                         "new_rows": result["new_rows"],
+                    })
+                if len(parts) == 6 and parts[3] == "batches" and parts[5] in (
+                        "proposal", "mappings", "mapping-diff"):
+                    batch_no = int(parts[4])
+                    projection = store.batch_projection(
+                        store.load_batch(project_dir, batch_no))
+                    if parts[5] == "proposal":
+                        return self._send(200, projection)
+                    if parts[5] == "mapping-diff":
+                        payload = store.load_batch(project_dir, batch_no)
+                        plan_a = body.get("plan_a") or {
+                            "measurements": payload.get("proposal", {}).get("measurements", []),
+                            "confirmed": payload.get("confirmed", [])}
+                        plan_b = body.get("plan_b") or {
+                            "measurements": payload.get("proposal", {}).get("measurements", []),
+                            "confirmed": body.get("confirmed", [])}
+                        v0 = store.load_version(project_dir, 0)
+                        old_columns = _columns(v0["rows"])
+                        plan_a["old_columns"] = old_columns
+                        plan_b["old_columns"] = old_columns
+                        diff = schema_mapping.compare_plans(
+                            plan_a, plan_b, payload["raw_rows"], old_columns,
+                            spec={"steps": body.get("steps", [])})
+                        return self._send(200, diff)
+                    confirmations = body.get("confirmed", [])
+                    result = store.confirm_mappings(
+                        project_dir, batch_no, confirmations,
+                        replace=bool(body.get("replace", False)))
+                    return self._send(200, {"ok": True, **result})
+                if len(parts) == 7 and parts[3] == "batches" and parts[5] == "mappings":
+                    if parts[6] != "revoke":
+                        return self._send(404, {"error": "not found"})
+                    batch_no = int(parts[4])
+                    mapping_id = body.get("mapping_id")
+                    result = store.revoke_mapping(
+                        project_dir, batch_no, mapping_id)
+                    exceptions = exc_store.load_exceptions(project_dir)
+                    mapping = next((m for m in result["proposal"]["measurements"]
+                                    if m["id"] == mapping_id), {})
+                    affected = schema_mapping.dependent_exception_scopes(
+                        exceptions, batch_no, mapping)
+                    exc_store.mark_needs_recheck(project_dir, affected)
+                    exceptions = exc_store.load_exceptions(project_dir)
+                    return self._send(200, {
+                        "ok": True, **result,
+                        "dependent_decisions": [
+                            {"key": key, "status": "needs_recheck",
+                             "exception": exceptions[key]}
+                            for key in affected],
                     })
                 if len(parts) == 5 and parts[3] == "exceptions":
                     row_id = body["row_id"]
@@ -208,13 +306,15 @@ class Handler(BaseHTTPRequestHandler):
                         exc_store.set_exception(
                             project_dir, row_id, scope, body["action"],
                             replacement=body.get("replacement"),
-                            reason=body.get("reason", ""))
+                            reason=body.get("reason", ""),
+                            batch=body.get("batch"),
+                            mapping_id=body.get("mapping_id"))
                     return self._send(200, {
                         "ok": True,
                         "exceptions": exc_store.load_exceptions(project_dir),
                     })
                 if len(parts) == 4 and parts[3] == "rule-impact":
-                    work_rows_all, _, appended_all = store.working_rows(project_dir)
+                    work_rows_all, _, appended_all, _ = store.working_rows_extended(project_dir)
                     appended_ids = {a["_id"] for a in appended_all}
                     step_type = body.get("step_type", "number_check")
                     impact = analysis.rule_impact(
@@ -239,8 +339,13 @@ class Handler(BaseHTTPRequestHandler):
                     spec = {"steps": body.get("steps", [])}
                     source_no = body.get("source_version", manifest["latest_version"])
                     use_workspace = bool(body.get("include_appended", False))
+                    structure_actions = []
+                    adopted_scope = {"status": "selected_version"}
                     if source_no == 0 and use_workspace:
-                        source = {"rows": work_rows, "lineage": work_lineage}
+                        structure_actions, adopted_scope = _structure_context(
+                            work_rows, schema_batches)
+                        source = {"rows": work_rows, "lineage": work_lineage,
+                                  "structure_actions": structure_actions}
                     else:
                         source = (latest if source_no == manifest["latest_version"]
                                   else store.load_version(project_dir, int(source_no)))
@@ -256,16 +361,26 @@ class Handler(BaseHTTPRequestHandler):
                         "row_count_before": len(source["rows"]),
                         "row_count_after": len(rows),
                         "sample": rows,
+                        "structure_actions": source.get("structure_actions", []),
+                        "adopted_scope": adopted_scope,
+                        "unresolved_mappings": adopted_scope.get("pending_mappings", []),
                     })
                 if len(parts) == 4 and parts[3] == "apply":
                     spec = {"steps": body.get("steps", [])}
                     source_version = body.get("source_version")
-                    if (int(source_version or manifest["latest_version"]) == 0
+                    work_rows, work_lineage, _, schema_batches = (
+                        store.working_rows_extended(project_dir))
+                    if (int(source_version if source_version is not None else manifest["latest_version"]) == 0
                             and body.get("include_appended", False)):
+                        fresh_manifest = store.load_manifest(project_dir)
+                        structure_actions, adopted_scope = _structure_context(
+                            work_rows, schema_batches)
                         # Apply over the extended working set without
                         # rewriting v0: write a transient source snapshot.
                         source_version = self._snapshot_workspace(
-                            project_dir, manifest, work_rows, work_lineage)
+                            project_dir, fresh_manifest, work_rows, work_lineage,
+                            structure_actions=structure_actions,
+                            adopted_scope=adopted_scope)
                     exceptions = (exc_store.active_map(
                         exc_store.load_exceptions(project_dir))
                         if body.get("use_exceptions", True) else None)
@@ -277,6 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(201, {
                         "version": new_no,
                         "reports": reports,
+                        "adopted_scope": adopted_scope if 'adopted_scope' in locals() else {"status": "selected_version"},
                     })
             return self._send(404, {"error": "not found"})
         except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
