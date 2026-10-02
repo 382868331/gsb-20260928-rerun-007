@@ -78,6 +78,138 @@ function PolicyTable({
   );
 }
 
+function SourcePolicyEditor({
+  policies,
+  issues,
+  onChange,
+}: {
+  policies: Record<string, unknown> | undefined;
+  issues: readonly PolicyRow[];
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  const value = policies ?? {};
+  const bySource =
+    (value.by_source as Record<
+      string,
+      Record<string, { action?: string; replacement?: number }>
+    >) ?? {};
+  const sources = Object.keys(bySource);
+  const setSourcePolicy = (
+    source: string,
+    issue: string,
+    patch: Record<string, unknown>,
+  ) => {
+    const sourcePolicies = bySource[source] ?? {};
+    onChange({
+      ...value,
+      by_source: {
+        ...bySource,
+        [source]: {
+          ...sourcePolicies,
+          [issue]: { ...(sourcePolicies[issue] ?? {}), ...patch },
+        },
+      },
+    });
+  };
+  const addSource = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || bySource[trimmed]) return;
+    onChange({
+      ...value,
+      by_source: { ...bySource, [trimmed]: {} },
+    });
+  };
+  const removeSource = (name: string) => {
+    const next = { ...bySource };
+    delete next[name];
+    onChange({ ...value, by_source: next });
+  };
+  return (
+    <div className="source-policies">
+      <span className="small muted">
+        按来源/批次覆盖：同一列同类异常可分别替换、排除或留待核对。
+      </span>
+      {sources.map((source) => (
+        <div key={source} className="source-policy-card">
+          <div className="source-policy-head">
+            <strong>来源：{source}</strong>
+            <button
+              type="button"
+              className="icon-btn danger"
+              onClick={() => removeSource(source)}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
+          <table className="rules-table">
+            <thead>
+              <tr><th>异常</th><th>策略（不选=跟随全局）</th><th>替代值</th></tr>
+            </thead>
+            <tbody>
+              {issues.map(({ key, label }) => {
+                const entry = bySource[source]?.[key];
+                return (
+                  <tr key={key}>
+                    <td>{label}</td>
+                    <td>
+                      <select
+                        value={entry?.action ?? ""}
+                        onChange={(e) => {
+                          if (e.target.value === "") {
+                            const next = { ...bySource[source] };
+                            delete next[key];
+                            onChange({
+                              ...value,
+                              by_source: { ...bySource, [source]: next },
+                            });
+                          } else {
+                            setSourcePolicy(source, key, { action: e.target.value });
+                          }
+                        }}
+                      >
+                        <option value="">跟随全局规则</option>
+                        <option value="flag">保留待核对</option>
+                        <option value="drop">排除该行</option>
+                        <option value="replace">使用替代值</option>
+                        <option value="error">中止执行</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        step="any"
+                        disabled={entry?.action !== "replace"}
+                        value={entry?.replacement ?? ""}
+                        onChange={(e) =>
+                          setSourcePolicy(source, key, {
+                            replacement:
+                              e.target.value === "" ? undefined : Number(e.target.value),
+                          })}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      <form
+        className="add-unit"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const data = new FormData(e.currentTarget);
+          addSource(String(data.get("sourceName") ?? ""));
+          e.currentTarget.reset();
+        }}
+      >
+        <input name="sourceName" placeholder="来源值（如 lab-A / batch-2）" />
+        <button type="submit" className="btn small">添加来源规则</button>
+      </form>
+    </div>
+  );
+}
+
 function ColumnPicker({ columns, selected, onToggle }: {
   columns: string[];
   selected: string[];
@@ -213,6 +345,18 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
             <input type="number" step="any" value={String(p.max_value ?? "")}
               onChange={(e) => update({ max_value: e.target.value || null })} />
           </label>
+          <label>
+            来源列（可选，如 lab / batch；同一异常按该列的值分别决策）
+            <select
+              value={(p.source_column as string) ?? ""}
+              onChange={(e) => update({ source_column: e.target.value || null })}
+            >
+              <option value="">不区分来源</option>
+              {columns.map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </label>
           <div>
             <span className="small muted">
               按异常来源分别设置；替代值必须明确填写，系统不会改成 0。
@@ -222,6 +366,11 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
               value={p.policies as Record<string, { action?: string; replacement?: number }>}
               onChange={(policies) => update({ policies })}
               defaults={{ missing: "flag" }}
+            />
+            <SourcePolicyEditor
+              policies={p.policies as Record<string, unknown>}
+              issues={ISSUES}
+              onChange={(policies) => update({ policies })}
             />
           </div>
         </div>
@@ -261,6 +410,18 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
               placeholder="例如 C"
             />
           </label>
+          <label>
+            来源列（可选，异常策略按该列的值分别决策）
+            <select
+              value={(p.source_column as string) ?? ""}
+              onChange={(e) => update({ source_column: e.target.value || null })}
+            >
+              <option value="">不区分来源</option>
+              {columns.map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </label>
           <div>
             <span className="small muted">换算前有效性（原值检查，替代值按标准单位填写）</span>
             <PolicyTable
@@ -268,6 +429,11 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
               value={p.policies as Record<string, { action?: string; replacement?: number }>}
               onChange={(policies) => update({ policies })}
               defaults={{ missing: "flag" }}
+            />
+            <SourcePolicyEditor
+              policies={p.policies as Record<string, unknown>}
+              issues={ISSUES}
+              onChange={(policies) => update({ policies })}
             />
             <label>
               原值允许下限（可空）
@@ -285,6 +451,11 @@ export function StepEditor({ step, index, columns, onChange, onRemove }: Props) 
             <PolicyTable
               issues={ISSUES.filter((i) => i.key === "nonfinite" || i.key === "out_of_range")}
               value={p.post_policies as Record<string, { action?: string; replacement?: number }>}
+              onChange={(post_policies) => update({ post_policies })}
+            />
+            <SourcePolicyEditor
+              policies={p.post_policies as Record<string, unknown>}
+              issues={ISSUES.filter((i) => i.key === "nonfinite" || i.key === "out_of_range")}
               onChange={(post_policies) => update({ post_policies })}
             />
             <label>

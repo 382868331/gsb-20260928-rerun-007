@@ -126,7 +126,7 @@ def _action_records(step_type, stats, lineage):
     return records
 
 
-def run(rows, spec, base_lineage=None):
+def run(rows, spec, base_lineage=None, context=None):
     """Run a spec over rows purely, without persisting anything.
 
     Returns (final_rows, global_lineage, step_reports).
@@ -141,7 +141,7 @@ def run(rows, spec, base_lineage=None):
     for step in spec["steps"]:
         step_type = step["type"]
         next_rows, local_lineage, stats = STEPS[step_type](
-            current, step.get("params", {})
+            current, step.get("params", {}), context=context
         )
         global_lineage = _compose(global_lineage, local_lineage)
         actions = _action_records(step_type, stats, global_lineage)
@@ -177,30 +177,61 @@ def atomic_write_json(path, payload):
         raise
 
 
-def apply_spec(project_dir, spec, label="", source_version=None):
+def apply_spec(project_dir, spec, label="", source_version=None, context=None):
     """Execute spec against the project's latest version and commit a new one.
 
     The new version is fully built in memory first; only when all steps
     succeed are the version file and the manifest swapped atomically.
     """
-    manifest = json.load(open(os.path.join(project_dir, "manifest.json"),
-                              encoding="utf-8"))
+    with open(os.path.join(project_dir, "manifest.json"),
+              encoding="utf-8") as handle:
+        manifest = json.load(handle)
     latest_no = manifest["latest_version"]
-    source_no = latest_no if source_version is None else source_version
-    existing = {v["version"] for v in manifest["versions"]}
-    if source_no not in existing:
-        raise ValueError(f"source version v{source_no} not found")
-    source_path = os.path.join(project_dir, "versions", f"v{source_no}.json")
-    with open(source_path, encoding="utf-8") as handle:
-        source = json.load(handle)
+    if source_version is None:
+        # Default: run over the accumulated working dataset (which may
+        # contain batches appended after the latest publication) instead
+        # of silently overwriting or missing that data.
+        source_no = None
+        working_path = os.path.join(project_dir, "working.json")
+        if os.path.isfile(working_path):
+            with open(working_path, encoding="utf-8") as handle:
+                source = json.load(handle)
+            source["data_generation"] = source.get("generation", 1)
+        else:
+            source_no = latest_no
+            with open(os.path.join(project_dir, "versions",
+                                   f"v{source_no}.json"),
+                      encoding="utf-8") as handle:
+                source = json.load(handle)
+    else:
+        source_no = source_version
+        existing = {v["version"] for v in manifest["versions"]}
+        if source_no not in existing:
+            raise ValueError(f"source version v{source_version} not found")
+        with open(os.path.join(project_dir, "versions",
+                               f"v{source_no}.json"),
+                  encoding="utf-8") as handle:
+            source = json.load(handle)
 
     final_rows, lineage, reports = run(
-        source["rows"], spec, base_lineage=source.get("lineage"))
+        source["rows"], spec, base_lineage=source.get("lineage"),
+        context=context)
+
+    manual_decisions = (context or {}).get("manual_decisions") or []
+    used_manual = set()
+    for report in reports:
+        for action in report.get("actions", []):
+            exception_id = action.get("detail", {}).get("exception_id")
+            if exception_id:
+                used_manual.add(exception_id)
+    data_generation = source.get("data_generation", source.get("generation", 1))
 
     new_no = latest_no + 1
     version_payload = {
         "version": new_no,
-        "created_from": source_no,
+        "created_from": source_no if source_no is not None else latest_no,
+        "data_generation": data_generation,
+        "manual_exception_ids": sorted(used_manual),
         "rows": final_rows,
         "lineage": lineage,
         "step_reports": reports,
@@ -218,7 +249,9 @@ def apply_spec(project_dir, spec, label="", source_version=None):
     # unreferenced file, never a half-visible version.
     manifest["versions"].append({
         "version": new_no,
-        "created_from": source_no,
+        "created_from": source_no if source_no is not None else latest_no,
+        "data_generation": data_generation,
+        "manual_exception_ids": sorted(used_manual),
         "label": label,
         "steps": [{"type": s["type"], "params": s.get("params", {})}
                   for s in spec["steps"]],

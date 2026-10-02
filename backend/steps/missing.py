@@ -23,7 +23,7 @@ def _as_number(value):
     return None
 
 
-def apply(rows, params):
+def apply(rows, params, context=None):
     strategy = params.get("strategy", "drop_row")
     columns = params.get("columns") or sorted(
         {key for row in rows for key in row if not key.startswith("_")}

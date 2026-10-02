@@ -32,7 +32,7 @@ def _equal(a, b):
     return str(a).strip() == str(b).strip()
 
 
-def apply(rows, params):
+def apply(rows, params, context=None):
     keys = params["keys"]
     merge = params.get("merge", "mean")
     on_conflict = params.get("on_conflict", "keep_all")

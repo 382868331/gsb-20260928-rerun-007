@@ -1,4 +1,13 @@
-import type { Manifest, PipelineStep, PreviewResult, Row, StepReport } from "./types";
+import type {
+  ExceptionStore,
+  Manifest,
+  ManualException,
+  PipelineStep,
+  PreviewResult,
+  Row,
+  StepReport,
+  VersionComparison,
+} from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -38,7 +47,13 @@ export const api = {
       }),
     }),
 
-  apply: (name: string, label: string, steps: PipelineStep[], sourceVersion?: number) =>
+  apply: (
+    name: string,
+    label: string,
+    steps: PipelineStep[],
+    sourceVersion?: number,
+    conflictResolutions?: Record<string, "keep" | "withdraw">,
+  ) =>
     request<{ version: number; reports: StepReport[] }>(
       `/api/projects/${encodeURIComponent(name)}/apply`,
       {
@@ -46,6 +61,7 @@ export const api = {
         body: JSON.stringify({
           label,
           source_version: sourceVersion,
+          conflict_resolutions: conflictResolutions,
           steps: steps.map(({ type, params }) => ({ type, params })),
         }),
       }
@@ -54,5 +70,54 @@ export const api = {
   lineage: (name: string, version: number, rowId: string) =>
     request<{ row_id: string; origins: string[]; origin_rows: Row[]; timeline: { step: string; description: string }[] }>(
       `/api/projects/${encodeURIComponent(name)}/versions/${version}/lineage/${rowId}`
+    ),
+
+  appendBatch: (name: string, csv: string, label?: string) =>
+    request<{
+      generation: number;
+      batch: { generation: number; label: string; row_ids: string[]; row_count: number };
+      new_rows: Row[];
+      old_record_count: number;
+    }>(`/api/projects/${encodeURIComponent(name)}/batches`, {
+      method: "POST",
+      body: JSON.stringify({ csv, label }),
+    }),
+
+  listExceptions: (name: string, version = 0) =>
+    request<ExceptionStore>(
+      `/api/projects/${encodeURIComponent(name)}/versions/${version}/exceptions`
+    ),
+
+  saveException: (
+    name: string,
+    exception: {
+      steps: { type: string; params: Record<string, unknown> }[];
+      row_id: string;
+      column: string;
+      issue: string;
+      stage?: string;
+      action: string;
+      replacement?: number;
+      reason?: string;
+    },
+  ) =>
+    request<{ exception: ManualException }>(
+      `/api/projects/${encodeURIComponent(name)}/exceptions`,
+      {
+        method: "POST",
+        body: JSON.stringify(exception),
+      }
+    ),
+
+  withdrawException: (name: string, id: string) =>
+    request<{ exception: ManualException }>(
+      `/api/projects/${encodeURIComponent(name)}/exceptions/${encodeURIComponent(id)}/withdraw`,
+      { method: "POST" },
+    ),
+
+  compareVersions: (name: string, a: number, b: number) =>
+    request<VersionComparison>(
+      `/api/projects/${encodeURIComponent(name)}/compare/${a}/${b}`,
+      { method: "POST", body: "{}" },
     ),
 };

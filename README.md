@@ -24,6 +24,28 @@
 单位换算（支持 `factor + offset`，如华氏度 → 摄氏度；未知单位报错中止）、
 重复记录合并（按主键分组，数值冲突可均值/首条/末条，可选择冲突即中止）。
 
+**按来源分别决策**：数值检查和单位换算都支持 `source_column`（如 `lab`、
+`batch` 列）。策略可写全局规则，再在 `policies.by_source[来源值]` 下为
+每个来源单独覆盖。因此同一列中来自两个来源的同类非法文字（如都是
+`ERR`）可以一个排除该行、另一个替换为明确数值或留待核对；统计按
+「异常 × 来源」分别汇总，预览的逐行明细标注 `decision_scope`
+（`global` / `source:<来源>` / `manual`），发布结果与预览完全一致。
+
+**追加实验批次**：`POST /api/projects/{name}/batches` 在不改动任何已发布
+版本的前提下，把新批次 CSV 并入工作数据集（`working.json` 代际递增、
+新行续号 `rNNNN`）。再预览时逐行标注「旧记录 / 新批次」，并分别统计
+受影响的旧记录与新记录；执行只追加新版本，旧版本文件永不被覆盖。
+
+**人工例外**：可对单条记录的单个异常设置人工决定（保留/排除/替代），
+保存在工程的 `exceptions.json` 中并附带保存时的规则指纹。之后修改规则，
+预览与发布会列出与新规则冲突的例外，用户必须逐条选择「保留」或
+「撤回」才能发布；撤回后该单元格恢复按规则处理，但审计记录保留。
+保存重开工程后例外仍在，原值、单位换算结果和排除原因都逐条对应。
+
+**版本比较**：`POST /api/projects/{name}/compare/{a}/{b}` 把两个已发布
+版本间每条记录的差异归为三类之一：数据新增（按批次代际判断，被规则
+排除的新行也算新增）、规则变化、人工决定。
+
 数值有效性把每类单元格严格区分为：**缺失**（空/NA）、**非法文字**
 （如 `ERR`）、**非有限数值**（`Infinity`/`inf`/`NaN` 或实际的非有限浮点）、
 **超出有限范围**（超出显式配置的 `min_value/max_value`）。单位换算分别在
@@ -88,6 +110,15 @@ cd frontend && node node_modules/vite/bin/vite.js build
   受影响行明细，不写盘
 - `POST /api/projects/{name}/apply` 全部步骤成功后原子提交新版本，可带
   `source_version` 从任意历史版本分叉，版本仍只追加、不变更旧版本
+- `POST /api/projects/{name}/batches` 追加新实验批次到工作数据集，不触碰
+  任何已发布版本；返回新代际、新行与旧记录数
+- `POST /api/projects/{name}/exceptions` 为单条记录添加人工例外（带当前
+  规则指纹）；`POST …/exceptions/{id}/withdraw` 撤回；
+  `GET …/versions/0/exceptions` 读取含已撤回记录的完整审计
+- `POST /api/projects/{name}/compare/{a}/{b}` 比较两个已发布版本，差异按
+  数据新增/规则变化/人工决定归因；预览与执行返回 `conflicts`，执行可带
+  `conflict_resolutions`（例外 id 映射为 keep 或 withdraw），未解决
+  冲突时返回 409
 
 预览/执行报告中每步都带 `stats.affected_rows`（行级影响：转换前后值、
 填充、删除、被合并的行），版本文件另存 `step_actions`，血缘接口在

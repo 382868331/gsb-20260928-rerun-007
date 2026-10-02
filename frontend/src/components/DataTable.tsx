@@ -1,4 +1,4 @@
-import { Info } from "lucide-react";
+import { Info, UserPlus } from "lucide-react";
 import type { Row } from "../types";
 
 interface Props {
@@ -8,9 +8,10 @@ interface Props {
   onTrace?: (rowId: string) => void;
   maxRows?: number;
   highlightIds?: Set<string>;
+  onException?: (rowId: string) => void;
 }
 
-export function DataTable({ rows, columns, version, onTrace, maxRows, highlightIds }: Props) {
+export function DataTable({ rows, columns, version, onTrace, maxRows, highlightIds, onException }: Props) {
   const shown = maxRows ? rows.slice(0, maxRows) : rows;
   const hasReview = rows.some((r) => Array.isArray(r._review) && r._review.length);
   return (
@@ -23,7 +24,7 @@ export function DataTable({ rows, columns, version, onTrace, maxRows, highlightI
               <th key={c}>{c}</th>
             ))}
             {hasReview ? <th>待核对</th> : null}
-            {onTrace ? <th>来源</th> : null}
+            {onTrace || onException ? <th>操作</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -42,15 +43,26 @@ export function DataTable({ rows, columns, version, onTrace, maxRows, highlightI
                 {hasReview ? (
                   <td>{review.length ? <span className="badge warn">待核对</span> : null}</td>
                 ) : null}
-                {onTrace ? (
-                  <td>
-                    <button
-                      className="icon-btn"
-                      title="查看来自哪些原记录"
-                      onClick={() => onTrace(row._id)}
-                    >
-                      <Info size={15} />
-                    </button>
+                {onTrace || onException ? (
+                  <td className="row-actions">
+                    {onTrace ? (
+                      <button
+                        className="icon-btn"
+                        title="查看来自哪些原记录"
+                        onClick={() => onTrace(row._id)}
+                      >
+                        <Info size={15} />
+                      </button>
+                    ) : null}
+                    {onException ? (
+                      <button
+                        className="icon-btn"
+                        title="对该记录设置人工例外"
+                        onClick={() => onException(row._id)}
+                      >
+                        <UserPlus size={15} />
+                      </button>
+                    ) : null}
                   </td>
                 ) : null}
               </tr>

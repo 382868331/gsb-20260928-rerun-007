@@ -8,7 +8,9 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import pipeline, store
+from . import compare, pipeline, store
+from .decisions import exception_conflicts
+from . import exceptions as manual_exc
 
 
 PROJECTS_ROOT = os.environ.get(
@@ -30,6 +32,48 @@ def _columns(rows):
             if not key.startswith("_") and key not in seen:
                 seen.append(key)
     return seen
+
+
+def _run_preview(project_dir, body):
+    """Run a preview over the accumulated working dataset by default.
+
+    Returns (reports, rows, new_ids, working_rows). Affected-row details
+    are annotated with ``is_new`` so callers can list old vs new records
+    separately; the exact same spec + manual decisions feed publish.
+    """
+    spec = {"steps": body.get("steps", [])}
+    source_version = body.get("source_version")
+    manual = [d for d in manual_exc.load_exceptions(project_dir)
+              .get("decisions", []) if d.get("status") == "active"]
+    if source_version is not None:
+        source = store.load_version(project_dir, int(source_version))
+        base_generation = source.get("data_generation", 1)
+    else:
+        manifest = store.load_manifest(project_dir)
+        source = store.load_working(project_dir)
+        latest = store.load_version(project_dir, manifest["latest_version"])
+        base_generation = latest.get("data_generation", 1)
+    rows, _lineage, reports = pipeline.run(
+        source["rows"], spec, base_lineage=source.get("lineage"),
+        context={"manual_decisions": manual})
+    new_ids = set()
+    for raw in source["rows"]:
+        if int(raw.get("_batch") or 1) > base_generation:
+            for origin in source.get("lineage", {}).get(raw["_id"],
+                                                        [raw["_id"]]):
+                new_ids.add(origin)
+    rule_fingerprints = {}
+    for report in reports:
+        stats = report.get("stats", {})
+        rule_fingerprints.update(stats.get("rule_fingerprints", {}))
+        for action in report.get("actions", []):
+            detail = action["detail"]
+            origins = set(action.get("origins", []))
+            detail["is_new"] = bool(origins & new_ids)
+    stored = manual_exc.load_exceptions(project_dir)
+    conflict_list = exception_conflicts(
+        stored.get("decisions", []), rule_fingerprints)
+    return reports, rows, new_ids, source["rows"], conflict_list
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -142,6 +186,10 @@ class Handler(BaseHTTPRequestHandler):
                             "origin_rows": [raw[o] for o in origins if o in raw],
                             "timeline": timeline,
                         })
+                if (len(parts) == 6 and parts[3] == "versions"
+                        and parts[5] == "exceptions"):
+                    payload = manual_exc.load_exceptions(project_dir)
+                    return self._send(200, payload)
             return self._send(404, {"error": "not found"})
         except (ValueError, FileNotFoundError) as exc:
             return self._error(exc)
@@ -156,34 +204,120 @@ class Handler(BaseHTTPRequestHandler):
                 store.ingest_csv(PROJECTS_ROOT, name, csv_text,
                                  label=body.get("label", "import"))
                 return self._send(201, {"ok": True, "name": name})
-            if parts[:2] == ["api", "projects"] and len(parts) == 4:
+            if (parts[:2] == ["api", "projects"]
+                    and parts[2] and 4 <= len(parts) <= 7):
                 name = parts[2]
                 project_dir = store.project_path(PROJECTS_ROOT, name)
                 manifest = store.load_manifest(project_dir)
                 latest = store.load_version(project_dir, manifest["latest_version"])
                 if parts[3] == "preview":
-                    spec = {"steps": body.get("steps", [])}
-                    source_no = body.get("source_version", manifest["latest_version"])
-                    source = (latest if source_no == manifest["latest_version"]
-                              else store.load_version(project_dir, int(source_no)))
-                    rows, lineage, reports = pipeline.run(source["rows"], spec)
+                    reports, rows, new_ids, working_rows, conflicts = \
+                        _run_preview(project_dir, body)
+                    new_rows = [r for r in working_rows
+                                if r["_id"] in new_ids]
+                    old_rows = [r for r in working_rows
+                                if r["_id"] not in new_ids]
                     return self._send(200, {
                         "reports": reports,
-                        "row_count_before": len(latest["rows"]),
+                        "row_count_before": len(working_rows),
                         "row_count_after": len(rows),
                         "sample": rows,
+                        "old_record_count": len(old_rows),
+                        "new_record_count": len(new_rows),
+                        "new_row_ids": sorted(new_ids),
+                        "conflicts": conflicts,
                     })
                 if parts[3] == "apply":
+                    # Re-run the preview path so publication uses the exact
+                    # decisions the user reviewed; block on unresolved
+                    # conflicts between manual exceptions and new rules.
+                    reports, rows, new_ids, working_rows, conflicts = \
+                        _run_preview(project_dir, body)
+                    resolutions = body.get("conflict_resolutions") or {}
+                    unresolved = [c["id"] for c in conflicts
+                                  if c["id"] not in resolutions]
+                    if unresolved and not body.get("allow_conflicts"):
+                        return self._send(409, {
+                            "error": "manual exceptions conflict with the "
+                                     "current rules; user must keep or "
+                                     "withdraw each one",
+                            "conflicts": conflicts,
+                            "unresolved": unresolved})
+                    if resolutions:
+                        fingerprints = {}
+                        for report in reports:
+                            fingerprints.update(
+                                report["stats"].get("rule_fingerprints", {}))
+                        # Withdrawn exceptions no longer match any cell and
+                        # have no current fingerprint; skip those ids.
+                        active_ids = {d.get("id") for d in manual_exc
+                                      .load_exceptions(project_dir)
+                                      .get("decisions", [])
+                                      if d.get("status") == "active"}
+                        fingerprints = {key: value
+                                        for key, value in fingerprints.items()
+                                        if key in active_ids}
+                        manual_exc.resolve_conflicts(
+                            project_dir, resolutions, fingerprints)
                     spec = {"steps": body.get("steps", [])}
                     source_version = body.get("source_version")
+                    manual = [d for d in manual_exc.load_exceptions(project_dir)
+                              .get("decisions", [])
+                              if d.get("status") == "active"]
                     new_no, reports = pipeline.apply_spec(
                         project_dir, spec, label=body.get("label", ""),
                         source_version=(int(source_version)
-                                       if source_version is not None else None))
+                                       if source_version is not None else None),
+                        context={"manual_decisions": manual})
                     return self._send(201, {
                         "version": new_no,
                         "reports": reports,
                     })
+                if parts[3] == "batches":
+                    generation, incoming, old_rows, batch_info = \
+                        store.append_batch(
+                            PROJECTS_ROOT, name, body.get("csv", ""),
+                            label=body.get("label", "append"))
+                    return self._send(201, {
+                        "generation": generation,
+                        "batch": batch_info,
+                        "new_rows": incoming,
+                        "old_record_count": len(old_rows),
+                    })
+                if parts[3] == "exceptions" and len(parts) == 4:
+                    # Preview first (dry_run) -> capture rule fingerprint
+                    # for the targeted cell; then persist unless dry_run.
+                    reports, _rows, _new, working, conflicts = \
+                        _run_preview(project_dir, {
+                            "steps": body.get("steps", [])})
+                    key = (f"{body['row_id']}|{body['column']}|"
+                           f"{body.get('stage', 'check')}|{body['issue']}")
+                    fingerprint = None
+                    for report in reports:
+                        fingerprint = report["stats"].get(
+                            "current_rule_fingerprints", {}).get(key)
+                        if fingerprint:
+                            break
+                    if fingerprint is None:
+                        raise ValueError(
+                            f"record {body['row_id']} column "
+                            f"{body['column']} has no current "
+                            f"{body['issue']} issue; nothing to override")
+                    if body.get("dry_run"):
+                        return self._send(200, {
+                            "ok": True, "rule_fingerprint": fingerprint})
+                    record = manual_exc.add_exception(
+                        project_dir, body, fingerprint)
+                    return self._send(201, {"exception": record})
+                if (len(parts) == 6 and parts[3] == "exceptions"
+                        and parts[5] == "withdraw"):
+                    record = manual_exc.withdraw_exception(
+                        project_dir, parts[4])
+                    return self._send(200, {"exception": record})
+                if parts[3] == "compare" and len(parts) == 6:
+                    result = compare.compare_versions(
+                        project_dir, parts[4], parts[5])
+                    return self._send(200, result)
             return self._send(404, {"error": "not found"})
         except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
             return self._error(exc)

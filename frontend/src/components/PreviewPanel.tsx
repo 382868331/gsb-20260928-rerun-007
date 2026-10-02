@@ -76,14 +76,35 @@ function AffectedRows({ report }: { report: StepReport }) {
       <span className="small muted">受影响的 {rows.length} 行预览（执行前不写盘）：</span>
       <ul className="affected-list">
         {(report.actions ?? []).map((action, i) => (
-          <li key={i} className="affected-item">
+          <li
+            key={i}
+            className={`affected-item ${
+              action.detail?.is_new ? "is-new-row" : ""
+            } ${
+              action.detail?.manual ? "is-manual" : ""
+            }`}
+          >
             <code>{action.origins.join(", ")}</code>
             <span>{action.description}</span>
+            <span className="muted small">
+              {scopeText(action.detail?.decision_scope as string | null)}
+              {action.detail?.source ? `（来源 ${String(action.detail.source)}）` : ""}
+              {action.detail?.is_new ? " · 新批次" : " · 旧记录"}
+              {action.detail?.manual ? " · 人工例外" : ""}
+            </span>
           </li>
         ))}
       </ul>
     </div>
   );
+}
+
+function scopeText(scope: string | null | undefined): string {
+  if (!scope) return "";
+  if (scope === "manual") return "人工例外";
+  if (scope === "global") return "全局规则";
+  if (scope.startsWith("source:")) return `来源规则 ${scope.slice(7)}`;
+  return scope;
 }
 
 function formatStat(value: unknown): string {
