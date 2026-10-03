@@ -89,6 +89,7 @@ def apply(rows, params):
         return policy, source
 
     converted = 0
+    blank_units = 0
     unknown_units = {}
     counts = {"pre": {issue: 0 for issue in PRE_ISSUES},
               "post": {issue: 0 for issue in POST_ISSUES}}
@@ -109,6 +110,12 @@ def apply(rows, params):
             raw_unit = row.get(unit_column)
             unit = (str(raw_unit).strip() if raw_unit is not None
                     else canonical_unit)
+            if not unit:
+                # Blank unit is distinct from an unknown one: the record
+                # simply carries no unit, so it is treated as already
+                # canonical and counted separately.
+                unit = canonical_unit
+                blank_units += 1
         factor_offset = factors.get(unit)
         if factor_offset is None:
             unknown_units[unit] = unknown_units.get(unit, 0) + 1
@@ -251,6 +258,7 @@ def apply(rows, params):
         "column": column,
         "canonical_unit": canonical_unit,
         "converted_rows": converted,
+        "blank_unit_rows": blank_units,
         "mixed_units": sorted(factors),
         "pre_convert_issues": _summary(counts["pre"]),
         "post_convert_issues": _summary(counts["post"]),

@@ -161,10 +161,10 @@ class Handler(BaseHTTPRequestHandler):
                                       if not any(e.get("batch") == m.get("batch")
                                                  and e.get("target_column") == m.get("target_column")
                                                  for e in explicit_records)]
-        required_targets = set(mapping_lib.rule_targets(steps or []))
+        target_rules = mapping_lib.rule_targets(steps or [])
         rows, pending, traces = mapping_lib.apply_mappings(
             work_rows, appended, records, old_columns,
-            required_targets=required_targets)
+            required_targets=set(target_rules), rule_refs=target_rules)
         adapted_lineage = {row["_id"]: [row["_id"]] for row in rows}
         pre_report = {
             "type": "schema_mapping",

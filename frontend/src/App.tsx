@@ -320,7 +320,20 @@ export default function App() {
               {(preview.unmapped_rows?.length || 0) > 0 && (
                 <div className="warning-box">
                   <strong>尚未确定的记录：</strong>
-                  {preview.unmapped_rows?.map((row) => row._id).join(", ")}
+                  <ul className="stat-list">
+                    {preview.unmapped_rows?.map((row) => {
+                      const missing = (row._missing_targets as string[] | undefined) || [];
+                      const status = row._mapping_status === "partial" ? "部分确认" : "未确认";
+                      return (
+                        <li key={row._id}>
+                          <code>{row._id}</code>（{status}）
+                          {missing.length > 0
+                            ? `：仍缺测量对应 ${missing.join(", ")}`
+                            : "：缺少全部测量对应"}
+                        </li>
+                      );
+                    })}
+                  </ul>
                   <div className="small muted">这些记录不参与本次已确认部分预览，也不会进入发布范围。</div>
                 </div>
               )}

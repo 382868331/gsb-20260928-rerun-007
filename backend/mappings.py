@@ -8,8 +8,10 @@ def clean(name):
     return str(name or "").strip().lower().replace("-", "_")
 
 
-def mapping_id(batch_no, target_column, source_column=None):
+def mapping_id(batch_no, target_column, source_column=None, sources=None):
     suffix = f":{source_column}" if source_column else ""
+    if source_column and sources:
+        suffix += "=" + "|".join(str(value) for value in sources)
     return f"b{batch_no}:{target_column}{suffix}"
 
 
@@ -180,16 +182,27 @@ def normalize_mapping(batch_no, item):
     if sources and not item.get("source_column"):
         raise ValueError("按来源确认测量时必须提供 source_column")
     source_column = item.get("source_column") or None
+    unit_column = item.get("unit_column") or None
+    default_unit = item.get("default_unit")
+    if default_unit is not None and not str(default_unit).strip():
+        default_unit = None
+    if unit_column and default_unit:
+        unit_mode = "mixed"
+    elif unit_column:
+        unit_mode = "per_row"
+    else:
+        unit_mode = "fixed_default"
     return {
-        "id": item.get("id") or mapping_id(batch_no, target, source_column),
+        "id": item.get("id") or mapping_id(batch_no, target, source_column,
+                                            sources),
         "batch": batch_no,
         "target_column": target,
         "measurement": item.get("measurement") or target,
         "value_column": values[0],
         "value_columns": list(values),
-        "unit_column": item.get("unit_column") or None,
-        "unit_mode": "per_row" if item.get("unit_column") else "fixed_default",
-        "default_unit": item.get("default_unit"),
+        "unit_column": unit_column,
+        "unit_mode": unit_mode,
+        "default_unit": default_unit,
         "source_column": source_column,
         "sources": list(sources),
         "status": "confirmed",
@@ -231,8 +244,39 @@ def matches(row, mapping):
         str(value) for value in mapping["sources"]}
 
 
+def legacy_unit_columns(rule_refs):
+    """Map target column -> unit column name expected by legacy rules."""
+    result = {}
+    for target, refs in (rule_refs or {}).items():
+        for ref in refs:
+            if ref.get("unit_column"):
+                result[target] = ref["unit_column"]
+                break
+    return result
+
+
+def resolve_unit(raw, mapping):
+    """Resolve the effective unit for one row of a confirmed mapping.
+
+    Returns (unit, unit_source) where unit_source is one of
+    "per_row" (explicit per-record unit), "default" (blank per-row unit
+    falling back to the batch-level default), "fixed_default" (no per-row
+    unit column at all) or "blank" (no unit information anywhere).
+    """
+    default = mapping.get("default_unit")
+    if not mapping.get("unit_column"):
+        return (default, "fixed_default") if default else (None, "blank")
+    per_row = raw.get(mapping["unit_column"])
+    per_row = str(per_row).strip() if per_row is not None else ""
+    if per_row:
+        return per_row, "per_row"
+    if default:
+        return default, "default"
+    return "", "blank"
+
+
 def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
-                   required_targets=None):
+                   required_targets=None, rule_refs=None):
     """Project raw appended rows into the legacy measurement schema."""
     appended_ids = {item["_id"]: item for item in appended_meta}
     original_rows = [row for row in raw_rows if row.get("_id") not in appended_ids]
@@ -240,6 +284,7 @@ def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
                  and m.get("status") == "confirmed"]
     adapted = [dict(row) for row in original_rows]
     pending, traces = [], {}
+    legacy_units = legacy_unit_columns(rule_refs)
     for raw in raw_rows:
         meta = appended_ids.get(raw.get("_id"))
         if not meta:
@@ -266,25 +311,40 @@ def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
                           "_mapping_ids": [m["id"] for m in selected]})
         row_trace = []
         for mapping in selected:
+            target = mapping["target_column"]
             value = raw.get(mapping["value_column"], "")
-            unit = (raw.get(mapping["unit_column"]) if mapping.get("unit_column")
-                    else mapping.get("default_unit"))
-            projected[mapping["target_column"]] = value
-            if mapping.get("unit_column"):
-                projected[mapping["unit_column"]] = unit
-            projected[f"_raw_{mapping['target_column']}"] = value
-            projected[f"_raw_{mapping['target_column']}_unit"] = unit
-            projected[f"_raw_{mapping['target_column']}_column"] = mapping["value_column"]
+            unit, unit_source = resolve_unit(raw, mapping)
+            projected[target] = value
+            # The legacy cleaning rules address the unit by the OLD unit
+            # column name (e.g. temp_unit); write the resolved unit there
+            # even when the new batch renamed or split the unit column.
+            legacy_unit = legacy_units.get(target)
+            unit_target = legacy_unit or mapping.get("unit_column")
+            if unit_target and unit is not None:
+                projected[unit_target] = unit
+            projected[f"_raw_{target}"] = value
+            projected[f"_raw_{target}_unit"] = (
+                raw.get(mapping["unit_column"]) if mapping.get("unit_column")
+                else mapping.get("default_unit"))
+            projected[f"_raw_{target}_column"] = mapping["value_column"]
+            unit_note = {
+                "per_row": f"逐行单位 {mapping.get('unit_column')}={unit}",
+                "default": f"逐行单位空白，按整列默认 {unit}",
+                "fixed_default": f"整列默认单位 {unit}",
+                "blank": "未提供单位",
+            }[unit_source]
             row_trace.append({
-                "row_id": raw["_id"], "target_column": mapping["target_column"],
+                "row_id": raw["_id"], "target_column": target,
                 "source_value_column": mapping["value_column"],
                 "original_text": value,
                 "source_unit_column": mapping.get("unit_column"),
                 "original_unit": unit, "unit_mode": mapping["unit_mode"],
+                "unit_source": unit_source,
+                "legacy_unit_column": legacy_unit,
                 "mapping_id": mapping["id"],
                 "explanation": (
-                    f"结构对应：{mapping['value_column']} → {mapping['target_column']}"
-                    + (f"；单位 {mapping['unit_column']}={unit}" if unit is not None else ""))})
+                    f"结构对应：{mapping['value_column']} → {target}"
+                    + f"；{unit_note}")})
         adapted.append(projected)
         traces[raw["_id"]] = row_trace
     return adapted, pending, traces

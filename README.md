@@ -55,6 +55,14 @@
   用户可以只确认部分测量并预览这部分结果，未确认记录清楚标示且不进入发布。
   投影行保留 `_raw_<measurement>`、`_raw_<measurement>_unit`、原始来源列与
   `schema_mapping` 血缘步骤，保存重开后仍可从原始列追溯到发布值。
+  数值列与单位列可以同时更名（如 `temperature_value` + `temperature_unit`）：
+  投影时单位会写回旧清洗规则所期望的单位列（如 `temp_unit`），确认成功后
+  预览与发布都按同一解释换算，不会丢失单位。同一批次可以既有逐行单位又有
+  整列默认单位（`unit_mode: "mixed"`）：逐行为空白时按默认单位，
+  明确填写优先；完全空白且未配置默认的单位列在换算时按目标单位计并单独
+  统计 `blank_unit_rows`，与显式未知单位（报错中止）严格区分。
+  两个来源共用同一批新列名时，按 `source_column + sources` 分别确认，
+  映射 ID 含来源取值（如 `b2:temperature:source=lab-A`），互不覆盖。
 - **例外跟随原始记录和测量**：新结构记录上的人工例外必须携带对应
   `mapping_id`；没有绑定或绑定到其他测量的例外不会生效。撤回映射
   （`batch-mappings/{batch}/revoke`）会停用依赖它的人工例外，并要求重新检查；

@@ -17,6 +17,21 @@ const STATUS_TEXT: Record<string, string> = {
   conflicting: "存在矛盾", missing: "缺少对应", confirmed: "已确认",
 };
 
+function describeMapping(m: MeasurementMapping): string {
+  const parts = [`${m.value_column} → ${m.target_column}`];
+  if (m.unit_mode === "mixed") {
+    parts.push(`逐行单位列 ${m.unit_column}，空白按整列默认 ${m.default_unit}`);
+  } else if (m.unit_mode === "per_row" && m.unit_column) {
+    parts.push(`逐行单位列 ${m.unit_column}`);
+  } else if (m.default_unit) {
+    parts.push(`整列默认单位 ${m.default_unit}`);
+  }
+  if (m.source_column) {
+    parts.push(`仅来源 ${m.source_column}=${(m.sources || []).join("/")}`);
+  }
+  return parts.join("；");
+}
+
 export function BatchPanel({ project, steps, appended, mappings,
                              onAppended, onMappingsChanged }: Props) {
   const [csv, setCsv] = useState("");
@@ -24,7 +39,9 @@ export function BatchPanel({ project, steps, appended, mappings,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<Record<number, MeasurementMapping[]>>({});
-  const [choices, setChoices] = useState<Record<string, { value: string; unit: string }>>({});
+  const [choices, setChoices] = useState<
+    Record<string, { value: string; unit: string; defaultUnit: string }>
+  >({});
   const batchNos = Array.from(new Set(appended.map((item) => item.batch))).sort();
 
   async function submit() {
@@ -62,6 +79,7 @@ export function BatchPanel({ project, steps, appended, mappings,
         target_column: item.target_column,
         value_column: valueColumn,
         unit_column: unitColumn || undefined,
+        default_unit: choice.defaultUnit || undefined,
       });
       onMappingsChanged();
       await inspect(batch);
@@ -125,6 +143,7 @@ export function BatchPanel({ project, steps, appended, mappings,
                             [item.target_column]: {
                               value: e.target.value,
                               unit: old[item.target_column]?.unit || "",
+                              defaultUnit: old[item.target_column]?.defaultUnit || "",
                             },
                           }))}>
                           <option value="">请选择</option>
@@ -139,12 +158,26 @@ export function BatchPanel({ project, steps, appended, mappings,
                             [item.target_column]: {
                               value: old[item.target_column]?.value || "",
                               unit: e.target.value,
+                              defaultUnit: old[item.target_column]?.defaultUnit || "",
                             },
                           }))}>
                           <option value="">无/固定单位</option>
                           {(item.unit_candidates || []).map((column) =>
                             <option key={column} value={column}>{column}</option>)}
                         </select>
+                      </label>
+                      <label className="small">整列默认单位（逐行空白时采用）
+                        <input
+                          value={choices[item.target_column]?.defaultUnit || ""}
+                          placeholder="如 C；留空表示无默认"
+                          onChange={(e) => setChoices((old) => ({
+                            ...old,
+                            [item.target_column]: {
+                              value: old[item.target_column]?.value || "",
+                              unit: old[item.target_column]?.unit || "",
+                              defaultUnit: e.target.value,
+                            },
+                          }))} />
                       </label>
                       <button className="btn primary" onClick={() => confirm(batch, item)}>确认对应</button>
                       {saved && <button className="btn" onClick={() => revoke(batch, saved)}>撤回</button>}
@@ -153,6 +186,41 @@ export function BatchPanel({ project, steps, appended, mappings,
                 </div>
               );
             })}
+            {(() => {
+              const confirmed = Object.values(mappings).filter(
+                (m) => m.batch === batch && m.status === "confirmed");
+              const pending = (analysis[batch] || []).filter(
+                (item) => item.status !== "reusable"
+                  && !confirmed.some((m) => m.target_column === item.target_column
+                    && !m.source_column));
+              return (
+                <div className="small">
+                  {confirmed.length > 0 && (
+                    <div>
+                      <strong>已确认的解释：</strong>
+                      <ul className="stat-list">
+                        {confirmed.map((m) => (
+                          <li key={m.id}>
+                            <code>{m.id}</code>：{describeMapping(m)}
+                            <button className="btn small" style={{ marginLeft: 8 }}
+                              onClick={() => revoke(batch, m)}>撤回</button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {pending.length > 0 && (
+                    <p className="muted">
+                      仍需确认的测量：
+                      {pending.map((item) =>
+                        `${item.target_column}（${STATUS_TEXT[item.status] || item.status}）`)
+                        .join("、")}
+                      ；未确认的追加记录不会进入预览采用范围与发布版本。
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         );
       })}
