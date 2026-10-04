@@ -203,6 +203,149 @@ class SchemaMappingTests(unittest.TestCase):
         })
         self.assertIn("r0004", {r["_id"] for r in preview["sample"]})
 
+    def test_renamed_value_and_unit_columns_reach_legacy_rule(self):
+        # Both the value column and the unit column were renamed; the
+        # confirmed interpretation must still feed the legacy unit rule.
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,147,F,lab-A\n"
+                   "E1,-4,F,lab-B\n",
+        })
+        status, analysis_result = call("POST", "/api/projects/p/batch-mappings/1",
+                                       {"steps": STEPS})
+        self.assertEqual(200, status)
+        proposal = analysis_result["mappings"][0]
+        self.assertEqual("needs_mapping", proposal["rule_inheritance"])
+        self.assertIn("temperature_unit", proposal["unit_candidates"])
+
+        status, _ = call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+        })
+        self.assertEqual(200, status)
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(63.8889, rows["r0004"]["temperature"], places=3)
+        self.assertAlmostEqual(-20.0, rows["r0005"]["temperature"], places=3)
+        self.assertEqual("F", rows["r0004"]["_raw_temperature_unit"])
+        self.assertEqual("per_row", rows["r0004"]["_raw_temperature_unit_source"])
+        self.assertEqual("147", rows["r0004"]["_raw_temperature"])
+        trace = preview["reports"][0]["actions"][0]["detail"]
+        self.assertEqual("temp_unit", trace["legacy_unit_column"])
+
+    def test_per_row_and_default_units_distinguish_blank_cells(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,86,F,lab-A\n"
+                   "E1,30,,lab-B\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "C",
+        })
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(30.0, rows["r0004"]["temperature"], delta=0.01)
+        self.assertEqual("per_row", rows["r0004"]["_raw_temperature_unit_source"])
+        # Blank unit cell falls back to the batch default (C), not to F.
+        self.assertAlmostEqual(30.0, rows["r0005"]["temperature"], delta=0.01)
+        self.assertEqual("default", rows["r0005"]["_raw_temperature_unit_source"])
+        self.assertEqual("C", rows["r0005"]["_raw_temperature_unit"])
+
+    def test_same_column_name_from_two_sources_does_not_overwrite(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom,source\n"
+                   "D1,86,F,lab-A\n"
+                   "E1,30,C,lab-B\n",
+        })
+        for sources in (["lab-A"], ["lab-B"]):
+            status, res = call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+                "target_column": "temperature",
+                "value_column": "reading",
+                "unit_column": "uom",
+                "source_column": "source",
+                "sources": sources,
+            })
+            self.assertEqual(200, status)
+        status, info = call("GET", "/api/projects/p")
+        saved = [m for m in info["mappings"].values()
+                 if m["target_column"] == "temperature"]
+        self.assertEqual(2, len(saved))
+        self.assertEqual({("lab-A",), ("lab-B",)},
+                         {tuple(m["sources"]) for m in saved})
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(30.0, rows["r0004"]["temperature"], delta=0.01)
+        self.assertAlmostEqual(30.0, rows["r0005"]["temperature"], delta=0.01)
+
+    def test_partial_confirm_then_publish_scope_matches_across_batches(self):
+        # Batch 1: only one of two measurements confirmed -> partial scope.
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,147,F,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+        })
+        # Batch 2: value column merged back to the legacy name.
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature,temp_unit,source\n"
+                   "E1,-4,F,lab-B\n",
+        })
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        scope = preview["adopted_scope"]
+        self.assertEqual(["b1:temperature", "b2:temperature:auto"],
+                         scope["confirmed_mapping_ids"])
+        published_ids = set(scope["published_row_ids"])
+        self.assertIn("r0004", published_ids)
+        self.assertIn("r0005", published_ids)  # implicit same-name reuse
+
+        # Reopen from disk: saved mapping must still drive the same scope.
+        status, applied = call("POST", "/api/projects/p/apply", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(201, status, applied)
+        final = server.store.load_version(
+            os.path.join(self.tmp.name, "p"), applied["version"])
+        rows = {r["_id"]: r for r in final["rows"]}
+        self.assertAlmostEqual(63.8889, rows["r0004"]["temperature"], places=3)
+        self.assertAlmostEqual(-20.0, rows["r0005"]["temperature"], places=3)
+        # Preview scope and final published scope are the same rows.
+        self.assertEqual(published_ids,
+                         {r["_id"] for r in final["rows"]
+                          if r.get("_mapping_status") == "confirmed"})
+
+        # Revoking the unit mapping reopens only dependent decisions and
+        # never rewrites the published version.
+        before = json.dumps(final["rows"], sort_keys=True)
+        status, res = call("POST", "/api/projects/p/batch-mappings/1/revoke",
+                           {"id": "b1:temperature"})
+        self.assertEqual(200, status)
+        reloaded = server.store.load_version(
+            os.path.join(self.tmp.name, "p"), applied["version"])
+        self.assertEqual(before, json.dumps(reloaded["rows"], sort_keys=True))
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(["r0004"], [r["_id"] for r in preview["unmapped_rows"]])
+
 
 if __name__ == "__main__":
     unittest.main()

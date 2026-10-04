@@ -8,8 +8,10 @@ def clean(name):
     return str(name or "").strip().lower().replace("-", "_")
 
 
-def mapping_id(batch_no, target_column, source_column=None):
+def mapping_id(batch_no, target_column, source_column=None, sources=None):
     suffix = f":{source_column}" if source_column else ""
+    if source_column and sources:
+        suffix += "=" + ",".join(sorted(str(s) for s in sources))
     return f"b{batch_no}:{target_column}{suffix}"
 
 
@@ -181,7 +183,8 @@ def normalize_mapping(batch_no, item):
         raise ValueError("按来源确认测量时必须提供 source_column")
     source_column = item.get("source_column") or None
     return {
-        "id": item.get("id") or mapping_id(batch_no, target, source_column),
+        "id": item.get("id") or mapping_id(batch_no, target, source_column,
+                                           sources),
         "batch": batch_no,
         "target_column": target,
         "measurement": item.get("measurement") or target,
@@ -231,8 +234,28 @@ def matches(row, mapping):
         str(value) for value in mapping["sources"]}
 
 
+def resolve_unit(raw, mapping):
+    """Pick the effective unit for one raw row under a confirmed mapping.
+
+    Returns (unit, unit_source) where unit_source is one of:
+    "per_row"  - an explicitly filled per-row unit cell;
+    "default"  - the cell was blank and the batch-level default applied;
+    "missing"  - neither a filled cell nor a default exists.
+    Blank, unknown and explicit units stay distinguishable downstream.
+    """
+    raw_unit = (raw.get(mapping["unit_column"])
+                if mapping.get("unit_column") else None)
+    if raw_unit is not None and str(raw_unit).strip():
+        return str(raw_unit).strip(), "per_row"
+    if mapping.get("default_unit"):
+        return str(mapping["default_unit"]).strip(), "default"
+    if mapping.get("unit_column"):
+        return "", "missing"
+    return None, "missing"
+
+
 def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
-                   required_targets=None):
+                   required_targets=None, legacy_unit_columns=None):
     """Project raw appended rows into the legacy measurement schema."""
     appended_ids = {item["_id"]: item for item in appended_meta}
     original_rows = [row for row in raw_rows if row.get("_id") not in appended_ids]
@@ -266,25 +289,40 @@ def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
                           "_mapping_ids": [m["id"] for m in selected]})
         row_trace = []
         for mapping in selected:
+            target = mapping["target_column"]
             value = raw.get(mapping["value_column"], "")
-            unit = (raw.get(mapping["unit_column"]) if mapping.get("unit_column")
-                    else mapping.get("default_unit"))
-            projected[mapping["target_column"]] = value
+            unit, unit_source = resolve_unit(raw, mapping)
+            legacy_unit_column = (legacy_unit_columns or {}).get(target)
+            projected[target] = value
             if mapping.get("unit_column"):
-                projected[mapping["unit_column"]] = unit
-            projected[f"_raw_{mapping['target_column']}"] = value
-            projected[f"_raw_{mapping['target_column']}_unit"] = unit
-            projected[f"_raw_{mapping['target_column']}_column"] = mapping["value_column"]
+                projected[mapping["unit_column"]] = (
+                    raw.get(mapping["unit_column"], ""))
+            if legacy_unit_column:
+                # Old cleaning rules still read the legacy unit column;
+                # the confirmed interpretation must reach them even when
+                # both the value and the unit column were renamed.
+                projected[legacy_unit_column] = (
+                    unit if unit is not None else "")
+            projected[f"_raw_{target}"] = value
+            projected[f"_raw_{target}_unit"] = unit
+            projected[f"_raw_{target}_unit_source"] = unit_source
+            projected[f"_raw_{target}_column"] = mapping["value_column"]
             row_trace.append({
-                "row_id": raw["_id"], "target_column": mapping["target_column"],
+                "row_id": raw["_id"], "target_column": target,
                 "source_value_column": mapping["value_column"],
                 "original_text": value,
                 "source_unit_column": mapping.get("unit_column"),
-                "original_unit": unit, "unit_mode": mapping["unit_mode"],
+                "original_unit": unit, "unit_source": unit_source,
+                "unit_mode": mapping["unit_mode"],
+                "legacy_unit_column": legacy_unit_column,
                 "mapping_id": mapping["id"],
                 "explanation": (
-                    f"结构对应：{mapping['value_column']} → {mapping['target_column']}"
-                    + (f"；单位 {mapping['unit_column']}={unit}" if unit is not None else ""))})
+                    f"结构对应：{mapping['value_column']} → {target}"
+                    + (f"；单位 {mapping['unit_column']}={unit}"
+                       if unit is not None and mapping.get("unit_column")
+                       else (f"；默认单位 {unit}" if unit is not None else ""))
+                    + (f"（写入旧单位列 {legacy_unit_column}）"
+                       if legacy_unit_column else ""))})
         adapted.append(projected)
         traces[raw["_id"]] = row_trace
     return adapted, pending, traces

@@ -162,9 +162,15 @@ class Handler(BaseHTTPRequestHandler):
                                                  and e.get("target_column") == m.get("target_column")
                                                  for e in explicit_records)]
         required_targets = set(mapping_lib.rule_targets(steps or []))
+        legacy_unit_columns = {}
+        for target, refs in mapping_lib.rule_targets(steps or []).items():
+            for ref in refs:
+                if ref.get("unit_column"):
+                    legacy_unit_columns[target] = ref["unit_column"]
         rows, pending, traces = mapping_lib.apply_mappings(
             work_rows, appended, records, old_columns,
-            required_targets=required_targets)
+            required_targets=required_targets,
+            legacy_unit_columns=legacy_unit_columns)
         adapted_lineage = {row["_id"]: [row["_id"]] for row in rows}
         pre_report = {
             "type": "schema_mapping",

@@ -321,6 +321,17 @@ export default function App() {
                 <div className="warning-box">
                   <strong>尚未确定的记录：</strong>
                   {preview.unmapped_rows?.map((row) => row._id).join(", ")}
+                  <ul className="small muted" style={{ margin: "4px 0" }}>
+                    {preview.unmapped_rows?.map((row) => (
+                      <li key={row._id}>
+                        {row._id}：
+                        {Array.isArray(row._missing_targets) && (row._missing_targets as string[]).length > 0
+                          ? `仍待确认测量 ${(row._missing_targets as string[]).join(", ")}`
+                          : "尚未确认任何测量对应"}
+                        {row._mapping_status === "partial" ? "（部分测量已确认）" : ""}
+                      </li>
+                    ))}
+                  </ul>
                   <div className="small muted">这些记录不参与本次已确认部分预览，也不会进入发布范围。</div>
                 </div>
               )}
