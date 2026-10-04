@@ -24,7 +24,9 @@ export function BatchPanel({ project, steps, appended, mappings,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<Record<number, MeasurementMapping[]>>({});
-  const [choices, setChoices] = useState<Record<string, { value: string; unit: string }>>({});
+  const [choices, setChoices] = useState<Record<string, {
+    value: string; unit: string; defaultUnit: string;
+  }>>({});
   const batchNos = Array.from(new Set(appended.map((item) => item.batch))).sort();
 
   async function submit() {
@@ -53,15 +55,24 @@ export function BatchPanel({ project, steps, appended, mappings,
   }
 
   async function confirm(batch: number, item: MeasurementMapping) {
-    const choice = choices[item.target_column] || {};
+    const key = `${batch}:${item.target_column}`;
+    const saved = Object.values(mappings).find((m) =>
+      m.batch === batch && m.target_column === item.target_column);
+    const choice = choices[key] || {};
     const valueColumn = choice.value || item.value_columns?.[0] || "";
-    const unitColumn = choice.unit || item.unit_column || item.unit_candidates?.[0] || "";
+    const unitColumn = choice.unit || item.unit_column || saved?.unit_column
+      || item.unit_candidates?.[0] || "";
+    const defaultUnit = choice.defaultUnit
+      ?? saved?.default_unit
+      ?? item.default_unit
+      ?? "";
     setError("");
     try {
       await api.confirmBatchMapping(project, batch, {
         target_column: item.target_column,
         value_column: valueColumn,
         unit_column: unitColumn || undefined,
+        default_unit: unitColumn ? (defaultUnit || null) : null,
       });
       onMappingsChanged();
       await inspect(batch);
@@ -112,6 +123,10 @@ export function BatchPanel({ project, steps, appended, mappings,
             {(analysis[batch] || []).map((item) => {
               const saved = Object.values(mappings).find((m) =>
                 m.batch === batch && m.target_column === item.target_column);
+              const key = `${batch}:${item.target_column}`;
+              const choice = choices[key] || {};
+              const chosenUnit = choice.unit || item.unit_column
+                || saved?.unit_column || "";
               return (
                 <div key={item.target_column} className="rule-card">
                   <strong>{item.target_column}：{STATUS_TEXT[saved ? "confirmed" : item.status] || item.status}</strong>
@@ -119,12 +134,13 @@ export function BatchPanel({ project, steps, appended, mappings,
                   {item.status !== "reusable" && (
                     <div className="row">
                       <label className="small">数值列
-                        <select value={choices[item.target_column]?.value || ""}
+                        <select value={choice.value || saved?.value_column || ""}
                           onChange={(e) => setChoices((old) => ({
                             ...old,
-                            [item.target_column]: {
+                            [key]: {
                               value: e.target.value,
-                              unit: old[item.target_column]?.unit || "",
+                              unit: old[key]?.unit || "",
+                              defaultUnit: old[key]?.defaultUnit || "",
                             },
                           }))}>
                           <option value="">请选择</option>
@@ -133,12 +149,13 @@ export function BatchPanel({ project, steps, appended, mappings,
                         </select>
                       </label>
                       <label className="small">单位列
-                        <select value={choices[item.target_column]?.unit || item.unit_column || ""}
+                        <select value={chosenUnit}
                           onChange={(e) => setChoices((old) => ({
                             ...old,
-                            [item.target_column]: {
-                              value: old[item.target_column]?.value || "",
+                            [key]: {
+                              value: old[key]?.value || "",
                               unit: e.target.value,
+                              defaultUnit: old[key]?.defaultUnit || "",
                             },
                           }))}>
                           <option value="">无/固定单位</option>
@@ -146,9 +163,40 @@ export function BatchPanel({ project, steps, appended, mappings,
                             <option key={column} value={column}>{column}</option>)}
                         </select>
                       </label>
+                      {chosenUnit && (
+                        <label className="small">整列默认单位
+                          <input
+                            style={{ width: 90 }}
+                            placeholder="如 F"
+                            list={`${key}-sample-units`}
+                            value={choice.defaultUnit ?? saved?.default_unit
+                              ?? item.default_unit ?? ""}
+                            onChange={(e) => setChoices((old) => ({
+                              ...old,
+                              [key]: {
+                                value: old[key]?.value || "",
+                                unit: old[key]?.unit || chosenUnit,
+                                defaultUnit: e.target.value,
+                              },
+                            }))}
+                          />
+                          <datalist id={`${key}-sample-units`}>
+                            {(item.sample_units || []).filter(Boolean).map((u) =>
+                              <option key={u} value={u} />)}
+                          </datalist>
+                        </label>
+                      )}
                       <button className="btn primary" onClick={() => confirm(batch, item)}>确认对应</button>
                       {saved && <button className="btn" onClick={() => revoke(batch, saved)}>撤回</button>}
                     </div>
+                  )}
+                  {saved?.unit_column && (
+                    <p className="small muted">
+                      逐行单位列 {saved.unit_column}
+                      {saved.default_unit
+                        ? `；该列空白时采用整列默认单位 ${saved.default_unit}`
+                        : "；未设置整列默认单位，空白单位行会报错待确认"}
+                    </p>
                   )}
                 </div>
               );

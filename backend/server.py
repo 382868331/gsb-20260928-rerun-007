@@ -330,13 +330,34 @@ class Handler(BaseHTTPRequestHandler):
                 if (len(parts) == 6 and parts[3] == "batch-mappings"
                         and parts[5] == "confirm"):
                     batch_no = int(parts[4])
+                    meta = [item for item in appended
+                            if item.get("batch") == batch_no]
+                    if not meta:
+                        raise ValueError(f"batch {batch_no} not found")
+                    batch_columns = set(meta[0].get("columns") or [])
                     mapping = mapping_lib.normalize_mapping(batch_no, body)
+                    value_column = mapping.get("value_column")
+                    unit_column = mapping.get("unit_column")
+                    if value_column not in batch_columns:
+                        raise ValueError(
+                            f"数值列 {value_column} 不属于批次 {batch_no}")
+                    if unit_column and unit_column not in batch_columns:
+                        raise ValueError(
+                            f"单位列 {unit_column} 不属于批次 {batch_no}")
                     saved = store.save_mapping(project_dir, mapping)
                     return self._send(200, {"ok": True, "mapping": mapping,
                                             "mappings": saved})
                 if (len(parts) == 6 and parts[3] == "batch-mappings"
                         and parts[5] == "revoke"):
+                    batch_no = int(parts[4])
                     mapping_id = body.get("id") or body.get("mapping_id")
+                    target = store.load_mappings(project_dir).get(mapping_id)
+                    if target is None:
+                        raise ValueError(f"mapping '{mapping_id}' not found")
+                    if target.get("batch") != batch_no:
+                        raise ValueError(
+                            f"mapping '{mapping_id}' 不属于批次 {batch_no}，"
+                            "不能从该批次撤回")
                     saved = store.revoke_mapping(project_dir, mapping_id)
                     affected = self._revoke_dependent_decisions(project_dir, mapping_id)
                     return self._send(200, {"ok": True, "mappings": saved,

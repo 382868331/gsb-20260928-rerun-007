@@ -16,6 +16,8 @@ export function PreviewPanel(
   { project, preview, accepted, onAccept, onReject, onExceptionChanged }: Props,
 ) {
   const delta = preview.row_count_after - preview.row_count_before;
+  const cleaningCount = preview.reports.filter(
+    (r) => r.type !== "schema_mapping").length;
   return (
     <div className="preview-panel">
       <div className="preview-summary">
@@ -28,22 +30,28 @@ export function PreviewPanel(
           {delta})
         </span>
         <span className="muted small">
-          已接受 {accepted.size}/{preview.reports.length} 步：请逐步预览受影响行后选择接受或退回
+          已接受 {accepted.size}/{cleaningCount} 步：请逐步预览受影响行后选择接受或退回
         </span>
       </div>
       <ol className="report-list">
         {preview.reports.map((r, i) => {
           const isAccepted = accepted.has(i);
+          const isMappingReport = r.type === "schema_mapping";
           return (
-          <li key={i} className={`report-item ${isAccepted ? "accepted" : ""}`}>
+          <li key={i} className={`report-item ${
+            isAccepted || isMappingReport ? "accepted" : ""}`}>
             <div className="report-head">
               <span className="step-index">{i + 1}</span>
               <strong>{r.label}</strong>
               <span className="muted small">
                 {r.row_count_before} 行 → {r.row_count_after} 行
               </span>
-              {isAccepted && <span className="badge ok">已接受</span>}
-              {!isAccepted && (
+              {(isAccepted || isMappingReport) && (
+                <span className="badge ok">
+                  {isMappingReport ? "对应关系已确认" : "已接受"}
+                </span>
+              )}
+              {!isAccepted && !isMappingReport && (
                 <span className="step-decide">
                   <button className="btn small primary" onClick={() => onAccept(i)}>
                     <Check size={13} /> 接受这一步

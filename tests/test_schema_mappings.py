@@ -261,6 +261,120 @@ class SchemaMappingTests(unittest.TestCase):
         self.assertEqual("default", rows["r0005"]["_raw_temperature_unit_source"])
         self.assertEqual("C", rows["r0005"]["_raw_temperature_unit"])
 
+    def test_renamed_columns_default_unit_values_and_persisted_basis(self):
+        exact_steps = [{
+            "type": "unit_convert",
+            "params": {**STEPS[0]["params"], "rules": {
+                "C": 1,
+                "F": {"factor": 5 / 9, "offset": -160 / 9}}},
+        }]
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom\n"
+                   "X1,147,F\n"
+                   "X2,-4,F\n"
+                   "X3,32,\n",
+        })
+        status, analysis_result = call("POST", "/api/projects/p/batch-mappings/1",
+                                       {"steps": exact_steps})
+        self.assertEqual(200, status)
+        proposal = analysis_result["mappings"][0]
+        self.assertEqual("needs_mapping", proposal["status"])
+        self.assertEqual(["reading"], proposal["candidate_columns"])
+        self.assertEqual(["uom"], proposal["unit_candidates"])
+
+        status, _ = call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "reading",
+            "unit_column": "uom",
+            "default_unit": " F ",
+        })
+        self.assertEqual(200, status)
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": exact_steps, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(63.888889, rows["r0004"]["temperature"], places=6)
+        self.assertEqual(-20.0, rows["r0005"]["temperature"])
+        self.assertEqual(0.0, rows["r0006"]["temperature"])
+        self.assertEqual("per_row", rows["r0004"]["_raw_temperature_unit_source"])
+        self.assertEqual("default", rows["r0006"]["_raw_temperature_unit_source"])
+        self.assertEqual("F", rows["r0006"]["_raw_temperature_unit"])
+        mapping_actions = preview["reports"][0]["actions"]
+        blank_trace = next(
+            a for a in mapping_actions
+            if a["origins"] == ["r0006"] and "temperature" in a["description"])
+        self.assertIn("该行为空", blank_trace["description"])
+        self.assertIn("整列默认单位 F", blank_trace["description"])
+
+        status, applied = call("POST", "/api/projects/p/apply", {
+            "steps": exact_steps, "source_version": 0,
+            "include_appended": True, "label": "renamed",
+        })
+        self.assertEqual(201, status)
+        saved = server.store.load_version(
+            os.path.join(self.tmp.name, "p"), applied["version"])
+        saved_rows = {r["_id"]: r for r in saved["rows"]}
+        self.assertAlmostEqual(63.888889,
+                               saved_rows["r0004"]["temperature"], places=6)
+        self.assertEqual(0.0, saved_rows["r0006"]["temperature"])
+        status, lineage = call("GET", "/api/projects/p/versions/"
+                                      f"{applied['version']}/lineage/r0006")
+        self.assertEqual(200, status)
+        self.assertTrue(any("整列默认单位 F" in item["description"]
+                            for item in lineage["timeline"]))
+
+    def test_explicit_unknown_unit_is_not_replaced_by_default(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom\nX1,32,BOGUS\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "reading",
+            "unit_column": "uom",
+            "default_unit": "F",
+        })
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(400, status)
+        self.assertIn("BOGUS", preview["error"])
+
+    def test_revoke_is_scoped_to_its_own_batch_with_same_column_names(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom\nX1,147,F\n",
+        })
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom\nY1,100,C\n",
+        })
+        for batch in (1, 2):
+            status, _ = call(
+                "POST", f"/api/projects/p/batch-mappings/{batch}/confirm", {
+                    "target_column": "temperature",
+                    "value_column": "reading",
+                    "unit_column": "uom",
+                    **({"default_unit": "F"} if batch == 1 else {}),
+                })
+            self.assertEqual(200, status)
+        status, res = call("POST", "/api/projects/p/batch-mappings/2/revoke",
+                           {"id": "b1:temperature"})
+        self.assertEqual(400, status)
+        status, res = call("POST", "/api/projects/p/batch-mappings/1/revoke",
+                           {"id": "b2:temperature"})
+        self.assertEqual(400, status)
+        status, res = call("POST", "/api/projects/p/batch-mappings/1/revoke",
+                           {"id": "b1:temperature"})
+        self.assertEqual(200, status)
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        self.assertEqual(["r0004"], [r["_id"] for r in preview["unmapped_rows"]])
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertEqual(100.0, rows["r0005"]["temperature"])
+        self.assertEqual(["b2:temperature"],
+                         preview["adopted_scope"]["confirmed_mapping_ids"])
+
     def test_same_column_name_from_two_sources_does_not_overwrite(self):
         call("POST", "/api/projects/p/batches/append", {
             "csv": "sample_id,reading,uom,source\n"

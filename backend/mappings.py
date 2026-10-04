@@ -12,7 +12,23 @@ def mapping_id(batch_no, target_column, source_column=None, sources=None):
     suffix = f":{source_column}" if source_column else ""
     if source_column and sources:
         suffix += "=" + ",".join(sorted(str(s) for s in sources))
-    return f"b{batch_no}:{target_column}{suffix}"
+    batch_part = f"b{batch_no}:" if batch_no is not None else ""
+    return f"{batch_part}{target_column}{suffix}"
+
+
+def _looks_numeric_column(rows, column):
+    values = [str(row.get(column, "")).strip() for row in rows]
+    values = [value for value in values if value]
+    if not values:
+        return False
+    numeric = 0
+    for value in values:
+        try:
+            float(value)
+        except ValueError:
+            continue
+        numeric += 1
+    return numeric / len(values) >= 0.5
 
 
 def rows_for_batch(raw_rows, batch_no):
@@ -92,6 +108,7 @@ def analyze_schema(old_columns, new_columns, rows, batch_no=None, steps=None):
     targets = rule_targets(steps)
     target_columns = list(targets) or [c for c in old_columns
                                        if c not in set(new_columns)]
+    old_column_set = set(old_columns)
     proposals = []
     for target in target_columns:
         exact, values = value_candidates(target, new_columns)
@@ -120,8 +137,29 @@ def analyze_schema(old_columns, new_columns, rows, batch_no=None, steps=None):
             if scoped:
                 reason += " 旧规则还按来源区分测量对象，必须逐来源确认。"
         else:
-            status, inheritance, confirmed = "missing", "conflicting", False
-            reason = "未找到可对应的新测量列，旧规则无法采用。"
+            fallback = [c for c in new_columns
+                        if c not in set(units)
+                        and c not in scoped_columns
+                        and c not in old_column_set
+                        and _looks_numeric_column(rows, c)]
+            if len(fallback) == 1:
+                values = list(fallback)
+                status, inheritance, confirmed = (
+                    "needs_mapping", "needs_mapping", False)
+                reason = (
+                    f"未找到同名数值列，新增列 {fallback[0]} 可能是改名后的"
+                    "测量值列，需要确认对应关系。")
+            elif fallback:
+                values = list(fallback)
+                status, inheritance, confirmed = (
+                    "ambiguous", "needs_mapping", False)
+                reason = (
+                    "存在多个可能的新测量列，需人工选择数值列，"
+                    "不能按列名自动选择。")
+            else:
+                status, inheritance, confirmed = (
+                    "missing", "conflicting", False)
+                reason = "未找到可对应的新测量列，旧规则无法采用。"
         if configured_missing and status == "reusable":
             status, inheritance, confirmed = "needs_mapping", "needs_mapping", False
             reason = f"单位列 {configured_unit} 缺失或改为逐条记录，需要确认新的单位解释。"
@@ -182,6 +220,9 @@ def normalize_mapping(batch_no, item):
     if sources and not item.get("source_column"):
         raise ValueError("按来源确认测量时必须提供 source_column")
     source_column = item.get("source_column") or None
+    default_unit = item.get("default_unit")
+    if default_unit is not None:
+        default_unit = str(default_unit).strip() or None
     return {
         "id": item.get("id") or mapping_id(batch_no, target, source_column,
                                            sources),
@@ -192,7 +233,7 @@ def normalize_mapping(batch_no, item):
         "value_columns": list(values),
         "unit_column": item.get("unit_column") or None,
         "unit_mode": "per_row" if item.get("unit_column") else "fixed_default",
-        "default_unit": item.get("default_unit"),
+        "default_unit": default_unit,
         "source_column": source_column,
         "sources": list(sources),
         "status": "confirmed",
@@ -221,7 +262,7 @@ def implicit_reusable_mappings(old_columns, appended_meta, raw_rows, steps):
                 "default_unit": next((r.get("canonical_unit") for r in proposal["rules"]
                                       if r.get("canonical_unit")), None),
             })
-            mapping["id"] = mapping_id(batch_no, proposal["target_column"], "auto")
+            mapping["id"] = f"b{batch_no}:{proposal['target_column']}:auto"
             mapping["implicit"] = True
             result.append(mapping)
     return result
@@ -316,13 +357,9 @@ def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
                 "unit_mode": mapping["unit_mode"],
                 "legacy_unit_column": legacy_unit_column,
                 "mapping_id": mapping["id"],
-                "explanation": (
-                    f"结构对应：{mapping['value_column']} → {target}"
-                    + (f"；单位 {mapping['unit_column']}={unit}"
-                       if unit is not None and mapping.get("unit_column")
-                       else (f"；默认单位 {unit}" if unit is not None else ""))
-                    + (f"（写入旧单位列 {legacy_unit_column}）"
-                       if legacy_unit_column else ""))})
+                "explanation": _trace_explanation(
+                    mapping, target, unit, unit_source,
+                    legacy_unit_column)})
         adapted.append(projected)
         traces[raw["_id"]] = row_trace
     return adapted, pending, traces
@@ -332,3 +369,24 @@ def mapping_trace_report(traces):
     return [{"origins": [row_id], "description": item["explanation"],
              "detail": item}
             for row_id, items in traces.items() for item in items]
+
+
+def _trace_explanation(mapping, target, unit, unit_source,
+                       legacy_unit_column):
+    parts = [f"结构对应：{mapping['value_column']} → {target}"]
+    unit_column = mapping.get("unit_column")
+    if unit_column:
+        if unit_source == "per_row":
+            parts.append(f"逐行单位列 {unit_column} 明确填写为 {unit}")
+        elif unit_source == "default":
+            parts.append(
+                f"逐行单位列 {unit_column} 该行为空，"
+                f"采用整列默认单位 {unit}")
+        else:
+            parts.append(
+                f"逐行单位列 {unit_column} 该行为空，且未设置整列默认单位")
+    elif unit is not None:
+        parts.append(f"整列默认单位 {unit}")
+    if legacy_unit_column:
+        parts.append(f"写入旧单位列 {legacy_unit_column}")
+    return "；".join(parts)

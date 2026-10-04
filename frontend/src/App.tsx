@@ -311,8 +311,11 @@ export default function App() {
                   setAccepted(next);
                 }}
                 onReject={(i) => {
-                  const removed = steps[i];
-                  patchSteps(steps.filter((s) => s.id !== removed.id));
+                  const cleaningIndex = preview.reports
+                    .slice(0, i + 1)
+                    .filter((r) => r.type !== "schema_mapping").length - 1;
+                  const removed = steps[cleaningIndex];
+                  if (removed) patchSteps(steps.filter((s) => s.id !== removed.id));
                 }}
                 onExceptionChanged={refreshProject}
               />
