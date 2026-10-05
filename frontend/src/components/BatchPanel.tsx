@@ -12,6 +12,12 @@ interface Props {
   onMappingsChanged: () => void;
 }
 
+interface MappingChoice {
+  value: string;
+  unit: string;
+  defaultUnit: string;
+}
+
 const STATUS_TEXT: Record<string, string> = {
   reusable: "可沿用", needs_mapping: "需确认", ambiguous: "存在歧义",
   conflicting: "存在矛盾", missing: "缺少对应", confirmed: "已确认",
@@ -24,7 +30,7 @@ export function BatchPanel({ project, steps, appended, mappings,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<Record<number, MeasurementMapping[]>>({});
-  const [choices, setChoices] = useState<Record<string, { value: string; unit: string }>>({});
+  const [choices, setChoices] = useState<Record<string, MappingChoice>>({});
   const batchNos = Array.from(new Set(appended.map((item) => item.batch))).sort();
 
   async function submit() {
@@ -53,21 +59,46 @@ export function BatchPanel({ project, steps, appended, mappings,
   }
 
   async function confirm(batch: number, item: MeasurementMapping) {
-    const choice = choices[item.target_column] || {};
+    const saved = Object.values(mappings).find((m) =>
+      m.batch === batch && m.target_column === item.target_column);
+    const choice = choices[choiceKey(batch, item)] || {};
     const valueColumn = choice.value || item.value_columns?.[0] || "";
-    const unitColumn = choice.unit || item.unit_column || item.unit_candidates?.[0] || "";
+    const unitColumn = choice.unit || item.unit_column || saved?.unit_column || "";
+    const defaultUnitRaw = Object.prototype.hasOwnProperty.call(
+      choices, choiceKey(batch, item))
+      ? choice.defaultUnit
+      : (saved?.default_unit ?? "");
+    const defaultUnit = (defaultUnitRaw ?? "").trim();
     setError("");
     try {
       await api.confirmBatchMapping(project, batch, {
         target_column: item.target_column,
         value_column: valueColumn,
         unit_column: unitColumn || undefined,
+        default_unit: defaultUnit || undefined,
       });
       onMappingsChanged();
       await inspect(batch);
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  function choiceKey(batch: number, item: MeasurementMapping): string {
+    return `${batch}:${item.id || item.target_column}`;
+  }
+
+  function patchChoice(batch: number, item: MeasurementMapping,
+                       patch: Partial<MappingChoice>) {
+    const key = choiceKey(batch, item);
+    const saved = Object.values(mappings).find((m) =>
+      m.batch === batch && m.target_column === item.target_column);
+    const current = choices[key] || {
+      value: item.value_columns?.[0] || "",
+      unit: item.unit_column || saved?.unit_column || "",
+      defaultUnit: saved?.default_unit ?? "",
+    };
+    setChoices((old) => ({ ...old, [key]: { ...current, ...patch } }));
   }
 
   async function revoke(batch: number, item: MeasurementMapping) {
@@ -112,43 +143,66 @@ export function BatchPanel({ project, steps, appended, mappings,
             {(analysis[batch] || []).map((item) => {
               const saved = Object.values(mappings).find((m) =>
                 m.batch === batch && m.target_column === item.target_column);
+              const choice = choices[choiceKey(batch, item)];
+              const unitColumn = choice?.unit
+                || item.unit_column || saved?.unit_column || "";
+              const defaultUnit = choice
+                ? choice.defaultUnit : (saved?.default_unit ?? "");
               return (
                 <div key={item.target_column} className="rule-card">
                   <strong>{item.target_column}：{STATUS_TEXT[saved ? "confirmed" : item.status] || item.status}</strong>
                   <p className="small muted">{item.reason}</p>
+                  {item.sample_units?.length ? (
+                    <p className="small muted">
+                      本批出现的逐行单位：
+                      {item.sample_units.map((unit) => (
+                        <span key={unit} className="chip mono">
+                          {unit || "（空白）"}
+                        </span>
+                      ))}
+                    </p>
+                  ) : null}
                   {item.status !== "reusable" && (
                     <div className="row">
                       <label className="small">数值列
-                        <select value={choices[item.target_column]?.value || ""}
-                          onChange={(e) => setChoices((old) => ({
-                            ...old,
-                            [item.target_column]: {
-                              value: e.target.value,
-                              unit: old[item.target_column]?.unit || "",
-                            },
-                          }))}>
+                        <select
+                          value={choice?.value || item.value_columns?.[0] || ""}
+                          onChange={(e) =>
+                            patchChoice(batch, item, { value: e.target.value })}>
                           <option value="">请选择</option>
                           {(item.candidate_columns || []).map((column) =>
                             <option key={column} value={column}>{column}</option>)}
                         </select>
                       </label>
-                      <label className="small">单位列
-                        <select value={choices[item.target_column]?.unit || item.unit_column || ""}
-                          onChange={(e) => setChoices((old) => ({
-                            ...old,
-                            [item.target_column]: {
-                              value: old[item.target_column]?.value || "",
-                              unit: e.target.value,
-                            },
-                          }))}>
-                          <option value="">无/固定单位</option>
+                      <label className="small">逐行单位列
+                        <select value={unitColumn}
+                          onChange={(e) =>
+                            patchChoice(batch, item, { unit: e.target.value })}>
+                          <option value="">无逐行单位列</option>
                           {(item.unit_candidates || []).map((column) =>
                             <option key={column} value={column}>{column}</option>)}
                         </select>
                       </label>
+                      <label className="small">整列默认单位（仅逐行单位为空时使用）
+                        <input
+                          placeholder={unitColumn ? "如 F；留空则空单位报错" : "未选择逐行单位列"}
+                          value={defaultUnit}
+                          disabled={!unitColumn}
+                          onChange={(e) => patchChoice(batch, item,
+                            { defaultUnit: e.target.value })}
+                        />
+                      </label>
                       <button className="btn primary" onClick={() => confirm(batch, item)}>确认对应</button>
                       {saved && <button className="btn" onClick={() => revoke(batch, saved)}>撤回</button>}
                     </div>
+                  )}
+                  {saved && (
+                    <p className="small muted">
+                      已确认：数值列 {saved.value_column}
+                      {saved.unit_column ? `，逐行单位列 ${saved.unit_column}` : "，无逐行单位列"}
+                      {saved.default_unit ? `，整列默认单位 ${saved.default_unit}` : "，无整列默认单位"}
+                      ；只有逐行单位为空时才使用默认单位，显式填写但未登记的单位仍进入异常处理。
+                    </p>
                   )}
                 </div>
               );

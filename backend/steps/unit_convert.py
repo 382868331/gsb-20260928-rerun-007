@@ -111,7 +111,7 @@ def apply(rows, params):
                     else canonical_unit)
         factor_offset = factors.get(unit)
         if factor_offset is None:
-            unknown_units[unit] = unknown_units.get(unit, 0) + 1
+            unknown_units.setdefault(unit, []).append(row.get("_id", "?"))
             continue
 
         raw_value = row.get(column)
@@ -238,10 +238,17 @@ def apply(rows, params):
         lineage[new_row["_id"]] = [row["_id"]]
 
     if unknown_units:
-        units = ", ".join(sorted(unknown_units))
+        details = "; ".join(
+            ("单位为空白且未配置整列默认单位"
+             if unit == "" else f"未知单位 {unit!r}")
+            + f"（行：{', '.join(rows)})"
+            for unit, rows in sorted(unknown_units.items(),
+                                    key=lambda kv: (kv[0] != "", kv[0])))
         raise ValueError(
-            f"column '{column}' has {sum(unknown_units.values())} row(s) "
-            f"with unknown unit(s): {units}"
+            f"column '{column}' has {sum(len(v) for v in unknown_units.values())} "
+            f"row(s) with unknown unit(s): {details}；"
+            "明确填写的单位必须在换算规则中登记，空白单元格可在测量对应中"
+            "配置整列默认单位"
         )
 
     def _summary(stage_counts):

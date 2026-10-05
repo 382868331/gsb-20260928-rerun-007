@@ -50,11 +50,17 @@
   温度从单列拆成 `temperature_value + temp_unit`、单位从固定配置变成逐条记录，+  或来源列同名但测量对象不同，都不会仅凭列名自动继承；多个候选值列会返回
   `ambiguous`，必须由用户选择，不能默认挑一个。
 - **确认与部分预览**：`batch-mappings/{batch}/confirm` 保存
-  `{target_column, value_column, unit_column, source_column, sources}`。
+  `{target_column, value_column, unit_column, default_unit, source_column, sources}`。
+  `unit_column` 是逐行单位列，`default_unit` 是整列默认单位：只有逐行单元格
+  为空时才使用默认值；明确填写但未在换算规则中登记的单位（如 `X`）仍走原有
+  的未知单位异常处理，不会被默认值顶替。每行记录 `unit_source = per_row|default|missing`，
+  保存映射、撤回后重新确认以及发布重开都能追溯该行用的是显式单位还是默认单位。
   预览时只把已确认测量投影给清洗步骤，并返回 `unmapped_rows` 与 `adopted_scope`；
   用户可以只确认部分测量并预览这部分结果，未确认记录清楚标示且不进入发布。
-  投影行保留 `_raw_<measurement>`、`_raw_<measurement>_unit`、原始来源列与
-  `schema_mapping` 血缘步骤，保存重开后仍可从原始列追溯到发布值。
+  投影行保留 `_raw_<measurement>`、`_raw_<measurement>_unit`、
+  `_raw_<measurement>_unit_source`（`per_row`/`default`/`missing`）、原始来源列与
+  `schema_mapping` 血缘步骤，保存重开后仍可从原始列追溯到发布值；多批或多来源
+  映射即使数值列/单位列同名，也按批次与来源分别保存、互不覆盖。
 - **例外跟随原始记录和测量**：新结构记录上的人工例外必须携带对应
   `mapping_id`；没有绑定或绑定到其他测量的例外不会生效。撤回映射
   （`batch-mappings/{batch}/revoke`）会停用依赖它的人工例外，并要求重新检查；

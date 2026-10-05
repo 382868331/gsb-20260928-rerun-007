@@ -261,6 +261,156 @@ class SchemaMappingTests(unittest.TestCase):
         self.assertEqual("default", rows["r0005"]["_raw_temperature_unit_source"])
         self.assertEqual("C", rows["r0005"]["_raw_temperature_unit"])
 
+    def test_default_unit_fills_only_blank_rows_explicit_unknown_rejected(self):
+        # 147F -> 63.89C, -4F -> -20C, blank unit on 32 falls back to the
+        # column default (C), and an explicit but unregistered unit (X)
+        # keeps following the original unknown-unit rejection path.
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,147,F,lab-A\n"
+                   "E1,-4,F,lab-B\n"
+                   "F1,32,,lab-A\n"
+                   "G1,9,X,lab-B\n",
+        })
+        status, res = call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "C",
+        })
+        self.assertEqual(200, status, res)
+        status, info = call("GET", "/api/projects/p")
+        saved = info["mappings"]["b1:temperature"]
+        self.assertEqual("C", saved["default_unit"])
+        self.assertEqual("temperature_unit", saved["unit_column"])
+
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(400, status)
+        self.assertIn("unknown unit", preview["error"])
+        self.assertIn("X", preview["error"])
+        self.assertIn("r0007", preview["error"])
+        # The blank row alone is not called out: default applies to it.
+        self.assertNotIn("r0006", preview["error"])
+
+        # Without a default unit, the blank row is also rejected,
+        # and the message says why (blank + no default).
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+        })
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(400, status)
+        self.assertIn("r0006", preview["error"])
+        self.assertIn("默认单位", preview["error"])
+
+        # Re-confirm restores the default; normal rows then convert.
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "C",
+        })
+        steps_without_unknown = [{
+            "type": "unit_convert",
+            "params": {**STEPS[0]["params"],
+                       "rules": {"C": 1, "F": {"factor": 0.5555556,
+                                                 "offset": -17.777778},
+                                 "X": 1}},
+        }]
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": steps_without_unknown, "source_version": 0,
+            "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(63.8889, rows["r0004"]["temperature"], places=3)
+        self.assertAlmostEqual(-20.0, rows["r0005"]["temperature"], places=3)
+        self.assertAlmostEqual(32.0, rows["r0006"]["temperature"], places=3)
+        self.assertEqual("per_row", rows["r0004"]["_raw_temperature_unit_source"])
+        self.assertEqual("per_row", rows["r0005"]["_raw_temperature_unit_source"])
+        self.assertEqual("default", rows["r0006"]["_raw_temperature_unit_source"])
+        self.assertEqual("per_row", rows["r0007"]["_raw_temperature_unit_source"])
+
+        # Publish: the persisted step action records the unit source per row,
+        # so reopening the project still explains explicit vs default units.
+        status, applied = call("POST", "/api/projects/p/apply", {
+            "steps": steps_without_unknown, "source_version": 0,
+            "include_appended": True,
+        })
+        self.assertEqual(201, status, applied)
+        version_path = os.path.join(self.tmp.name, "p", "versions",
+                                   f"v{applied['version']}.json")
+        published = json.load(open(version_path, encoding="utf-8"))
+        details = {(a["origins"][0], a["detail"]["unit_source"])
+                   for a in published["step_reports"][0]["actions"]}
+        self.assertIn(("r0004", "per_row"), details)
+        self.assertIn(("r0006", "default"), details)
+        default_action = next(a for a in published["step_reports"][0]["actions"]
+                              if a["origins"][0] == "r0006")
+        self.assertIn("整列默认单位", default_action["description"])
+        explicit_action = next(a for a in published["step_reports"][0]["actions"]
+                               if a["origins"][0] == "r0004")
+        self.assertIn("显式单位", explicit_action["description"])
+        status, lineage = call("GET", "/api/projects/p/versions/"
+                                      f"{applied['version']}/lineage/r0006")
+        self.assertEqual(200, status)
+        self.assertIn("默认单位", lineage["timeline"][0]["description"])
+
+    def test_default_unit_decisions_are_independent_across_batches(self):
+        # Two batches both use the generic column names reading/uom, but
+        # their defaults differ and must be stored/resolved independently.
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom,source\n"
+                   "D1,32,,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,reading,uom,source\n"
+                   "E1,32,,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "reading",
+            "unit_column": "uom",
+            "default_unit": "C",
+        })
+        call("POST", "/api/projects/p/batch-mappings/2/confirm", {
+            "target_column": "temperature",
+            "value_column": "reading",
+            "unit_column": "uom",
+            "default_unit": "F",
+        })
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(32.0, rows["r0004"]["temperature"], places=3)
+        self.assertAlmostEqual(0.0, rows["r0005"]["temperature"], places=3)
+        self.assertEqual("C", rows["r0004"]["_raw_temperature_unit"])
+        self.assertEqual("F", rows["r0005"]["_raw_temperature_unit"])
+        self.assertEqual("default", rows["r0004"]["_raw_temperature_unit_source"])
+        self.assertEqual("default", rows["r0005"]["_raw_temperature_unit_source"])
+
+        # Revoking batch 1 leaves batch 2's default intact and only r0004
+        # drops back to pending.
+        status, res = call("POST", "/api/projects/p/batch-mappings/1/revoke",
+                           {"id": "b1:temperature"})
+        self.assertEqual(200, status, res)
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(["r0004"], [r["_id"] for r in preview["unmapped_rows"]])
+        status, info = call("GET", "/api/projects/p")
+        remaining = [m for m in info["mappings"].values()
+                     if m["target_column"] == "temperature"]
+        self.assertEqual([2], [m["batch"] for m in remaining])
+        self.assertEqual("F", remaining[0]["default_unit"])
+
     def test_same_column_name_from_two_sources_does_not_overwrite(self):
         call("POST", "/api/projects/p/batches/append", {
             "csv": "sample_id,reading,uom,source\n"

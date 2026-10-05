@@ -182,6 +182,9 @@ def normalize_mapping(batch_no, item):
     if sources and not item.get("source_column"):
         raise ValueError("按来源确认测量时必须提供 source_column")
     source_column = item.get("source_column") or None
+    default_unit = item.get("default_unit")
+    default_unit = str(default_unit).strip() if default_unit is not None else None
+    default_unit = default_unit or None
     return {
         "id": item.get("id") or mapping_id(batch_no, target, source_column,
                                            sources),
@@ -192,7 +195,7 @@ def normalize_mapping(batch_no, item):
         "value_columns": list(values),
         "unit_column": item.get("unit_column") or None,
         "unit_mode": "per_row" if item.get("unit_column") else "fixed_default",
-        "default_unit": item.get("default_unit"),
+        "default_unit": default_unit,
         "source_column": source_column,
         "sources": list(sources),
         "status": "confirmed",
@@ -318,14 +321,24 @@ def apply_mappings(raw_rows, appended_meta, mappings, old_columns,
                 "mapping_id": mapping["id"],
                 "explanation": (
                     f"结构对应：{mapping['value_column']} → {target}"
-                    + (f"；单位 {mapping['unit_column']}={unit}"
-                       if unit is not None and mapping.get("unit_column")
-                       else (f"；默认单位 {unit}" if unit is not None else ""))
+                    + _unit_explanation(mapping, unit, unit_source)
                     + (f"（写入旧单位列 {legacy_unit_column}）"
                        if legacy_unit_column else ""))})
         adapted.append(projected)
         traces[raw["_id"]] = row_trace
     return adapted, pending, traces
+
+
+def _unit_explanation(mapping, unit, unit_source):
+    if not mapping.get("unit_column"):
+        return f"；固定单位 {unit}" if unit is not None else ""
+    column = mapping["unit_column"]
+    if unit_source == "per_row":
+        return f"；逐行单位列 {column} 显式单位：{unit}"
+    if unit_source == "default":
+        return (f"；逐行单位列 {column} 该行为空，"
+                f"采用整列默认单位：{unit}")
+    return f"；逐行单位列 {column} 该行为空且未配置整列默认单位"
 
 
 def mapping_trace_report(traces):
