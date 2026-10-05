@@ -24,7 +24,7 @@ export function BatchPanel({ project, steps, appended, mappings,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<Record<number, MeasurementMapping[]>>({});
-  const [choices, setChoices] = useState<Record<string, { value: string; unit: string }>>({});
+  const [choices, setChoices] = useState<Record<string, { value: string; unit: string; defaultUnit: string }>>({});
   const batchNos = Array.from(new Set(appended.map((item) => item.batch))).sort();
 
   async function submit() {
@@ -53,15 +53,19 @@ export function BatchPanel({ project, steps, appended, mappings,
   }
 
   async function confirm(batch: number, item: MeasurementMapping) {
+    const saved = Object.values(mappings).find((m) =>
+      m.batch === batch && m.target_column === item.target_column);
     const choice = choices[item.target_column] || {};
     const valueColumn = choice.value || item.value_columns?.[0] || "";
     const unitColumn = choice.unit || item.unit_column || item.unit_candidates?.[0] || "";
+    const defaultUnit = choice.defaultUnit || saved?.default_unit || item.default_unit || "";
     setError("");
     try {
       await api.confirmBatchMapping(project, batch, {
         target_column: item.target_column,
         value_column: valueColumn,
         unit_column: unitColumn || undefined,
+        default_unit: defaultUnit || undefined,
       });
       onMappingsChanged();
       await inspect(batch);
@@ -125,6 +129,7 @@ export function BatchPanel({ project, steps, appended, mappings,
                             [item.target_column]: {
                               value: e.target.value,
                               unit: old[item.target_column]?.unit || "",
+                              defaultUnit: old[item.target_column]?.defaultUnit || "",
                             },
                           }))}>
                           <option value="">请选择</option>
@@ -139,6 +144,7 @@ export function BatchPanel({ project, steps, appended, mappings,
                             [item.target_column]: {
                               value: old[item.target_column]?.value || "",
                               unit: e.target.value,
+                              defaultUnit: old[item.target_column]?.defaultUnit || "",
                             },
                           }))}>
                           <option value="">无/固定单位</option>
@@ -146,9 +152,30 @@ export function BatchPanel({ project, steps, appended, mappings,
                             <option key={column} value={column}>{column}</option>)}
                         </select>
                       </label>
+                      <label className="small">默认单位（仅逐行单位为空时生效）
+                        <input
+                          value={choices[item.target_column]?.defaultUnit ?? saved?.default_unit ?? ""}
+                          placeholder="如 C"
+                          onChange={(e) => setChoices((old) => ({
+                            ...old,
+                            [item.target_column]: {
+                              value: old[item.target_column]?.value || "",
+                              unit: old[item.target_column]?.unit || "",
+                              defaultUnit: e.target.value,
+                            },
+                          }))} />
+                      </label>
                       <button className="btn primary" onClick={() => confirm(batch, item)}>确认对应</button>
                       {saved && <button className="btn" onClick={() => revoke(batch, saved)}>撤回</button>}
                     </div>
+                  )}
+                  {saved && (
+                    <p className="small muted">
+                      已确认：数值列 {saved.value_column || saved.value_columns?.[0]}
+                      {saved.unit_column ? `；逐行单位列 ${saved.unit_column}` : "；无逐行单位列"}
+                      {saved.default_unit ? `；整列默认单位 ${saved.default_unit}` : ""}
+                      。撤回后重新确认会保留以上选择。
+                    </p>
                   )}
                 </div>
               );

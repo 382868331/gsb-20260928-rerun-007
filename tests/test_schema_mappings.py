@@ -347,5 +347,95 @@ class SchemaMappingTests(unittest.TestCase):
         self.assertEqual(["r0004"], [r["_id"] for r in preview["unmapped_rows"]])
 
 
+    def test_default_unit_applies_only_to_blank_cells(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,147,F,lab-A\n"
+                   "E1,-4,F,lab-B\n"
+                   "F1,32,,lab-A\n"
+                   "G1,50,X,lab-B\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "C",
+        })
+        # The explicitly filled unknown unit X must still abort via the
+        # original unknown-unit error path; the default never rescues it.
+        status, res = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(400, status)
+        self.assertIn("X", res["error"])
+        self.assertIn("unknown unit", res["error"])
+
+    def test_same_named_columns_in_two_batches_have_independent_defaults(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,32,,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "E1,32,,lab-B\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "C",
+        })
+        call("POST", "/api/projects/p/batch-mappings/2/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "F",
+        })
+        status, info = call("GET", "/api/projects/p")
+        saved = {m["batch"]: m for m in info["mappings"].values()}
+        self.assertEqual("C", saved[1]["default_unit"])
+        self.assertEqual("F", saved[2]["default_unit"])
+        self.assertNotEqual(saved[1]["id"], saved[2]["id"])
+        status, preview = call("POST", "/api/projects/p/preview", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(200, status, preview)
+        rows = {r["_id"]: r for r in preview["sample"]}
+        self.assertAlmostEqual(32.0, rows["r0004"]["temperature"], delta=0.01)
+        self.assertAlmostEqual(0.0, rows["r0005"]["temperature"], delta=0.01)
+        self.assertEqual("default", rows["r0004"]["_raw_temperature_unit_source"])
+        self.assertEqual("default", rows["r0005"]["_raw_temperature_unit_source"])
+
+    def test_unit_source_traceable_after_publish_and_reopen(self):
+        call("POST", "/api/projects/p/batches/append", {
+            "csv": "sample_id,temperature_value,temperature_unit,source\n"
+                   "D1,147,F,lab-A\n"
+                   "E1,-4,F,lab-B\n"
+                   "F1,32,,lab-A\n",
+        })
+        call("POST", "/api/projects/p/batch-mappings/1/confirm", {
+            "target_column": "temperature",
+            "value_column": "temperature_value",
+            "unit_column": "temperature_unit",
+            "default_unit": "C",
+        })
+        status, applied = call("POST", "/api/projects/p/apply", {
+            "steps": STEPS, "source_version": 0, "include_appended": True,
+        })
+        self.assertEqual(201, status, applied)
+        # Reopen from disk: each record keeps whether it used an explicit
+        # per-row unit or the batch default.
+        final = server.store.load_version(
+            os.path.join(self.tmp.name, "p"), applied["version"])
+        rows = {r["_id"]: r for r in final["rows"]}
+        self.assertAlmostEqual(63.8889, rows["r0004"]["temperature"], places=3)
+        self.assertAlmostEqual(-20.0, rows["r0005"]["temperature"], places=3)
+        self.assertAlmostEqual(32.0, rows["r0006"]["temperature"], delta=0.01)
+        self.assertEqual("per_row", rows["r0004"]["_raw_temperature_unit_source"])
+        self.assertEqual("per_row", rows["r0005"]["_raw_temperature_unit_source"])
+        self.assertEqual("default", rows["r0006"]["_raw_temperature_unit_source"])
+        self.assertEqual("F", rows["r0004"]["_raw_temperature_unit"])
+        self.assertEqual("C", rows["r0006"]["_raw_temperature_unit"])
+
 if __name__ == "__main__":
     unittest.main()
